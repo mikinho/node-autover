@@ -1,0 +1,11 @@
+{
+    "format": "build",
+    "workspaces": false,
+    "guardUnchanged": true,
+    "skipOnCI": true,
+    "short": true,
+    "rootAlso": true,
+    "lockPath": ".git/autover.lock",
+    "patch": null,
+    "verbose": false
+}
