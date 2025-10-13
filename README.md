@@ -8,7 +8,7 @@ Autover: strict SemVer versioner (build metadata by default) for Node projects.
 
 ```bash
 # add to your project
-npm install --save-dev autover
+npm install --save-dev @mikinho/autover
 
 # install default .autoverrc.json
 npx autover --init

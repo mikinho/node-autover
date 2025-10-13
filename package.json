@@ -1,6 +1,6 @@
 {
-    "name": "autover",
-    "version": "2.0.0+410395.a9d56e3",
+    "name": "@mikinho/autover",
+    "version": "2.0.0+410401.b8e69cb",
     "description": "Strict SemVer build-metadata versioner for Node projects (workspaces aware).",
     "bin": {
         "autover": "bin/autover.js"
