@@ -1,6 +1,6 @@
 {
     "name": "@mikinho/autover",
-    "version": "2.0.1+410402.1276c2c",
+    "version": "2.0.1+410414.v2.0.1-1-g4816d29",
     "description": "Strict SemVer build-metadata versioner for Node projects (workspaces aware).",
     "bin": {
         "autover": "bin/autover.js"
@@ -55,7 +55,7 @@
         "lint:fix": "eslint . --fix",
         "ver:preview": "npx autver --no-amend --dry-run --short || npx autover --no-amend --dry-run --short",
         "ver:apply": "npx autver --guard-unchanged --short || npx autover --guard-unchanged --short",
-        "test": "eslint --no-warn-ignored $(git diff --cached --name-only | tr '\\n' ' ')",
+        "test": "eslint --no-warn-ignored $(git diff --cached --name-only --diff-filter=ACMRTUXB | tr '\\n' ' ')",
         "prepublishOnly": "npm test || true",
         "postversion": "git push && git push --tags"
     },
