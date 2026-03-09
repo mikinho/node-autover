@@ -1,7 +1,7 @@
 {
     "name": "@mikinho/autover",
     "version": "2.0.1+410414.v2.0.1-1-g4816d29",
-    "description": "Strict SemVer build-metadata versioner for Node projects (workspaces aware).",
+    "description": "Strict SemVer build-metadata versioner for Node.js — deterministic timestamps, workspace-aware, safe post-commit amend with reentrancy lock",
     "bin": {
         "autover": "bin/autover.js"
     },
@@ -18,14 +18,20 @@
     "homepage": "https://github.com/mikinho/node-autover#readme",
     "keywords": [
         "semver",
-        "version",
-        "git",
-        "workspaces",
-        "monorepo",
+        "versioning",
+        "semantic-versioning",
+        "git-hooks",
+        "post-commit",
         "build-metadata",
         "prerelease",
-        "npx",
-        "hooks"
+        "workspaces",
+        "monorepo",
+        "npm",
+        "nodejs",
+        "cli",
+        "ci-cd",
+        "package-version",
+        "developer-tools"
     ],
     "engines": {
         "node": ">=18"
