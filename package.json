@@ -56,6 +56,7 @@
         "ver:preview": "npx autover --no-amend --dry-run --short",
         "ver:apply": "npx autover --guard-unchanged --short",
         "test": "files=$(git diff --cached --name-only --diff-filter=ACMRTUXB | tr '\\n' ' '); [ -z \"$files\" ] && exit 0 || eslint --no-warn-ignored $files",
+        "test:unit": "node --test 'test/**/*.test.js'",
         "prepublishOnly": "npm test",
         "postversion": "git push && git push --tags"
     },

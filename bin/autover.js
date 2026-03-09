@@ -785,6 +785,22 @@ function printHelp() {
  * @method main
  * @private
  */
+export {
+    parseMMP,
+    makeVersionBuild,
+    makeVersionPre,
+    minutesSinceYearStart,
+    parseArgs,
+    versionTuple,
+    isoZ,
+    fromGitEpoch,
+};
+
+const _isDirectRun =
+    process.argv[1] &&
+    fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+
+if (_isDirectRun)
 (async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
