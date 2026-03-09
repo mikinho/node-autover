@@ -3,7 +3,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2025 Michael Welter <me@mikinho.com>
+Copyright (c) 2025-2026 Michael Welter <me@mikinho.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -22,8 +22,6 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
-
-"use strict";
 
 /**
  * Autover: strict SemVer versioner (build metadata by default) for Node projects.
@@ -267,10 +265,6 @@ function fromGitEpoch(ts) {
  * @return {Object} Parsed JSON object.
  */
 async function readJSON(p) {
-    if (!fs.existsSync(p)) {
-        console.error(`Error: ${p} does not exist.`);
-        process.exit(1);
-    }
     const raw = await fsp.readFile(p, "utf8");
     return JSON.parse(raw);
 }
@@ -288,8 +282,13 @@ async function atomicWriteJSON(p, data) {
     const dir = path.dirname(p);
     await fsp.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, `.autover.tmp.${process.pid}.${Date.now()}`);
-    await fsp.writeFile(tmp, JSON.stringify(data, null, 4) + "\n", "utf8");
-    await fsp.rename(tmp, p);
+    try {
+        await fsp.writeFile(tmp, JSON.stringify(data, null, 4) + "\n", "utf8");
+        await fsp.rename(tmp, p);
+    } catch (e) {
+        await fsp.unlink(tmp).catch(() => {});
+        throw e;
+    }
 }
 
 /**
@@ -592,6 +591,12 @@ async function doInit(repoRoot) {
         guardUnchanged: true,
         skipOnCI: true,
         short: true,
+        quiet: false,
+        rootAlso: true,
+        tagOnChange: false,
+        lockPath: ".git/autover.lock",
+        patch: null,
+        verbose: false,
     };
     await fsp.writeFile(p, JSON.stringify(body, null, 4) + "\n", "utf8");
     console.log("autover: wrote .autoverrc.json");
@@ -741,7 +746,7 @@ function parseArgs(argv) {
             out.guardUnchanged = true;
         } else if (a === "--patch" && i + 1 < argv.length) {
             const n = Number(argv[++i]);
-            if (Number.isNaN(n)) {
+            if (!Number.isInteger(n)) {
                 console.error("--patch requires an integer");
                 process.exit(2);
             }
@@ -990,6 +995,7 @@ if (_isDirectRun)
                     );
                 }
             }
+            process.exitCode = 4;
             return;
         }
 
