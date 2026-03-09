@@ -83,12 +83,12 @@ are — invalid `format` or `patch` values will error with exit code 2.
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| 0    | Success (files updated or nothing to do without `--guard-unchanged`) |
-| 1    | Fatal error (no git, no repo, amend failed, etc.) |
+| Code | Meaning                                                                   |
+| ---- | ------------------------------------------------------------------------- |
+| 0    | Success (files updated or nothing to do without `--guard-unchanged`)      |
+| 1    | Fatal error (no git, no repo, amend failed, etc.)                         |
 | 2    | Bad arguments (`--format`, `--patch`, unknown flags, conflicting options) |
-| 4    | `--guard-unchanged` active and no version changes needed |
+| 4    | `--guard-unchanged` active and no version changes needed                  |
 
 ## Troubleshooting
 

@@ -9,5 +9,5 @@
     "quoteProps": "as-needed",
     "arrowParens": "always",
     "proseWrap": "preserve",
-    "overrides": [{ "files": "*.md", "options": { "proseWrap": "always" } }]
+    "overrides": [{ "files": "*.md", "options": { "proseWrap": "preserve" } }]
 }
