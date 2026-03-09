@@ -66,6 +66,7 @@ const defaultOptions = {
     noAmend: false,
     dryRun: false,
     verbose: false,
+    quiet: false,
     short: false,
     format: "build",
     guardUnchanged: false,
@@ -631,6 +632,7 @@ npx autover
     await fsp.chmod(posixHookPath, 0o755);
     await fsp.writeFile(windowsHookPath, windowsHook, "utf8");
     console.log(`autover: installed hooks:\n  ${posixHookPath}\n  ${windowsHookPath}`);
+    console.log("autover: hooks run bare `npx autover`; use .autoverrc.json for custom settings.");
 }
 
 /**
@@ -726,6 +728,8 @@ function parseArgs(argv) {
             out.dryRun = true;
         } else if (a === "-v" || a === "--verbose") {
             out.verbose = true;
+        } else if (a === "-q" || a === "--quiet") {
+            out.quiet = true;
         } else if (a === "--short") {
             out.short = true;
         } else if (a === "--format" && i + 1 < argv.length) {
@@ -762,7 +766,7 @@ function printHelp() {
             "  npx autover [--file PATH | --workspaces]",
             "               [--format build|pre] [--patch N]",
             "               [--guard-unchanged] [--no-amend] [--dry-run]",
-            "               [--verbose] [--short] [--init] [--install]",
+            "               [--verbose] [--quiet] [--short] [--init] [--install]",
             "",
             "Examples:",
             "  npx autover",
@@ -821,12 +825,25 @@ function printHelp() {
 
     // Command Line Arguments > Config File Arguments > Default Option
     const configOptions = await loadConfig(repoRoot);
+
+    const knownConfigKeys = new Set([
+        ...Object.keys(defaultOptions),
+        "rootAlso",
+        "skipOnCI",
+        "tagOnChange",
+    ]);
+    for (const key of Object.keys(configOptions)) {
+        if (!knownConfigKeys.has(key)) {
+            console.warn(`autover: unknown config key "${key}" in .autoverrc.json`);
+        }
+    }
+
     const cfg = { ...defaultOptions, ...configOptions, ...args };
 
     // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
     const lk = lockPath(cfg.lockPath);
     if (!acquireLock(lk)) {
-        if (cfg.short || cfg.verbose) {
+        if (!cfg.quiet && (cfg.short || cfg.verbose)) {
             console.log("autover: lock present; exiting.");
         }
         return;
@@ -837,6 +854,7 @@ function printHelp() {
         cfg.format = String(cfg.format).toLowerCase();
         cfg.workspaces = Boolean(cfg.workspaces);
         cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
+        cfg.quiet = Boolean(cfg.quiet);
 
         const rootAlso = Boolean(cfg.rootAlso);
         const skipOnCI = Boolean(cfg.skipOnCI);
@@ -847,7 +865,7 @@ function printHelp() {
             cfg.patch = Number.isNaN(n) ? null : n;
         }
         if (skipOnCI && process.env.CI) {
-            if (cfg.verbose || cfg.short) {
+            if (!cfg.quiet && (cfg.verbose || cfg.short)) {
                 console.log("autover: CI detected and skipOnCI=true; exiting.");
             }
             return;
@@ -943,11 +961,15 @@ function printHelp() {
         }
 
         if (cfg.guardUnchanged && changedFiles.length === 0) {
-            const ts = isoZ(lastDate || new Date());
-            if (cfg.short) {
-                console.log(`autover: 0 files updated | unchanged | ${ts}`);
-            } else if (cfg.verbose) {
-                console.log("autover: guard active and no version changes; exiting without amend.");
+            if (!cfg.quiet) {
+                const ts = isoZ(lastDate || new Date());
+                if (cfg.short) {
+                    console.log(`autover: 0 files updated | unchanged | ${ts}`);
+                } else if (cfg.verbose) {
+                    console.log(
+                        "autover: guard active and no version changes; exiting without amend.",
+                    );
+                }
             }
             return;
         }
@@ -968,14 +990,14 @@ function printHelp() {
             maybeTag(tagOnChange, firstChangedVersion, changedFiles.length > 0, cfg.verbose);
         }
 
-        if (cfg.short) {
+        if (!cfg.quiet && cfg.short) {
             const ts = isoZ(lastDate || new Date());
             const v = firstChangedVersion || "unchanged";
             console.log(`autover: ${changedFiles.length} files updated | ${v} | ${ts}`);
             return;
         }
 
-        if (cfg.verbose) {
+        if (!cfg.quiet && cfg.verbose) {
             const when = isoZ(lastDate || new Date());
             console.log(`${"git commit".padEnd(13)} = ${describeShort()}`);
             console.log(`${"author ts".padEnd(13)} = ${gitTs || "n/a"}`);
