@@ -28,7 +28,7 @@ import globals from "globals";
 import js from "@eslint/js";
 import json from "@eslint/json";
 import markdown from "@eslint/markdown";
-// import eslintConfigPrettier from "eslint-config-prettier";
+import eslintConfigPrettier from "eslint-config-prettier";
 import pluginPrettier from "eslint-plugin-prettier";
 
 export default defineConfig([
@@ -72,6 +72,5 @@ export default defineConfig([
         language: "markdown/gfm",
         extends: ["markdown/recommended"],
     },
-    // Optionally put this LAST to disable any rules that would fight Prettier
-    // eslintConfigPrettier,
+    eslintConfigPrettier,
 ]);
