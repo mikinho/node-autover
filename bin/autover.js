@@ -35,7 +35,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *
  * @module autover
  * @main autover
- * @version 2.0.0
+ * @version 2.0.1
  * @since 2.0.0
  */
 
@@ -49,10 +49,12 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import fg from "fast-glob";
 
+const _require = createRequire(import.meta.url);
 /** @const {string} SCRIPT_VERSION */
-const SCRIPT_VERSION = "2.0.0";
+const SCRIPT_VERSION = _require("../package.json").version.split("+")[0];
 
 /** @const {string} LOCKFILE_DEFAULT */
 const LOCKFILE_DEFAULT = ".git/autover.lock";
@@ -389,27 +391,24 @@ function lockPath(custom) {
 }
 
 /**
- * Check if a lock file exists.
+ * Atomically create a reentrancy lock file.
+ * Returns true if the lock was acquired, false if it already existed.
  *
- * @method lockExists
+ * @method acquireLock
  * @param {String} p Path to lock file.
  * @return {Boolean}
  */
-function lockExists(p) {
-    return fs.existsSync(p);
-}
-
-/**
- * Create a reentrancy lock file.
- *
- * @method createLock
- * @async
- * @param {String} p Path to lock file.
- * @return {void}
- */
-async function createLock(p) {
-    await fsp.mkdir(path.dirname(p), { recursive: true });
-    await fsp.writeFile(p, new Date().toISOString(), "utf8");
+function acquireLock(p) {
+    try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, new Date().toISOString(), { flag: "wx" });
+        return true;
+    } catch (e) {
+        if (e.code === "EEXIST") {
+            return false;
+        }
+        throw e;
+    }
 }
 
 /**
@@ -641,7 +640,6 @@ npx autover
  * @param {Array<String>} filesToAdd Absolute file paths to stage.
  * @param {Object} opts Options.
  * @param {Boolean} opts.verbose Verbose logging.
- * @param {String} opts.lockfile Path to lock file.
  * @return {void}
  */
 async function stageAndAmend(filesToAdd, { verbose }) {
@@ -823,30 +821,28 @@ function printHelp() {
     const configOptions = await loadConfig(repoRoot);
     const cfg = { ...defaultOptions, ...configOptions, ...args };
 
-    // Global reentrancy guard
+    // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
     const lk = lockPath(cfg.lockPath);
-    if (lockExists(lk)) {
+    if (!acquireLock(lk)) {
         if (cfg.short || cfg.verbose) {
             console.log("autover: lock present; exiting.");
         }
         return;
     }
-
-    await createLock(lk);
     try {
-        args.format = (cfg.format ?? args.format).toLowerCase();
-        args.workspaces = Boolean(cfg.workspaces ?? args.workspaces);
-        args.guardUnchanged = Boolean(cfg.guardUnchanged ?? args.guardUnchanged);
+        // cfg already has CLI > config > defaults via spread order above;
+        // normalize the values we need going forward.
+        cfg.format = String(cfg.format).toLowerCase();
+        cfg.workspaces = Boolean(cfg.workspaces);
+        cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
 
-        const rootAlso = Boolean(cfg.rootAlso ?? false);
-        const skipOnCI = Boolean(cfg.skipOnCI ?? false);
-        const tagOnChange = Boolean(cfg.tagOnChange ?? false);
+        const rootAlso = Boolean(cfg.rootAlso);
+        const skipOnCI = Boolean(cfg.skipOnCI);
+        const tagOnChange = Boolean(cfg.tagOnChange);
 
-        if (cfg.patch != null && args.patch == null) {
+        if (cfg.patch != null && !Number.isInteger(cfg.patch)) {
             const n = Number(cfg.patch);
-            if (!Number.isNaN(n)) {
-                args.patch = n;
-            }
+            cfg.patch = Number.isNaN(n) ? null : n;
         }
         if (skipOnCI && process.env.CI) {
             if (cfg.verbose || cfg.short) {
@@ -857,7 +853,7 @@ function printHelp() {
 
         // targets
         let targets = [];
-        if (args.workspaces) {
+        if (cfg.workspaces) {
             const ws = await detectWorkspaceFiles(repoRoot);
             if (ws === null) {
                 targets = Array.from(recursivePackageJsons(repoRoot));
@@ -871,16 +867,21 @@ function printHelp() {
                 }
             }
         } else {
-            targets = [args.file ? path.resolve(args.file) : path.join(repoRoot, "package.json")];
+            targets = [cfg.file ? path.resolve(cfg.file) : path.join(repoRoot, "package.json")];
         }
         targets = Array.from(new Set(targets.filter((p) => fs.existsSync(p))));
 
         // staged gating for workspaces
         let stagedAbs = [];
-        if (args.workspaces) {
+        if (cfg.workspaces) {
             const rels = stagedRelPaths(repoRoot);
             stagedAbs = rels.map((r) => path.resolve(repoRoot, r));
             targets = targets.filter((pj) => subtreeHasStaged(repoRoot, pj, stagedAbs));
+        }
+
+        if (cfg.format === "pre" && cfg.patch != null) {
+            console.error("autover: --patch is not supported with --format pre");
+            process.exit(2);
         }
 
         const commitid = describeShort() || "unknown";
@@ -902,9 +903,9 @@ function printHelp() {
             }
 
             const [newVer, dt] =
-                args.format === "pre"
+                cfg.format === "pre"
                     ? makeVersionPre(pkg, commitid, gitTs)
-                    : makeVersionBuild(pkg, commitid, gitTs, args.patch);
+                    : makeVersionBuild(pkg, commitid, gitTs, cfg.patch);
 
             lastDate = dt;
             const oldVer = String(pkg.version ?? "");
@@ -924,7 +925,7 @@ function printHelp() {
                 continue;
             }
 
-            if (args.dryRun) {
+            if (cfg.dryRun) {
                 changedFiles.push(pj);
                 if (!firstChangedVersion) {
                     firstChangedVersion = newVer;
@@ -939,7 +940,7 @@ function printHelp() {
             }
         }
 
-        if (args.guardUnchanged && changedFiles.length === 0) {
+        if (cfg.guardUnchanged && changedFiles.length === 0) {
             const ts = isoZ(lastDate || new Date());
             if (cfg.short) {
                 console.log(`autover: 0 files updated | unchanged | ${ts}`);
@@ -949,7 +950,7 @@ function printHelp() {
             return;
         }
 
-        if (!args.noAmend && !args.dryRun) {
+        if (!cfg.noAmend && !cfg.dryRun) {
             if (safeToAmend(repoRoot)) {
                 await stageAndAmend(changedFiles, { verbose: cfg.verbose });
             } else if (cfg.verbose) {

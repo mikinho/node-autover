@@ -81,18 +81,14 @@ jobs:
                       core.setOutput('number', pr.number.toString());
                       core.setOutput('has_required', hasRequired ? 'true' : 'false');
 
-            - name: Exit if no PR or missing required label
-              if: ${{ steps.pr.outputs.found != 'true' || steps.pr.outputs.has_required != 'true' }}
-              run: |
-                  echo "Guarded apply skipped."
-                  exit 0
-
             - name: Configure Git author
+              if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' }}
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
             - name: Run autover (apply)
+              if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' }}
               id: apply_autover
               run: |
                   set -euo pipefail
@@ -101,10 +97,11 @@ jobs:
                   echo "summary=${line//'%'/'%25'}" >> "$GITHUB_OUTPUT"
 
             - name: Push amended commit back
+              if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' }}
               run: git push --force-with-lease
 
             - name: Optionally create tag from autover output
-              if: ${{ env.CREATE_TAG == 'true' }}
+              if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' && env.CREATE_TAG == 'true' }}
               run: |
                   set -euo pipefail
                   line="${{ steps.apply_autover.outputs.summary }}"
@@ -116,6 +113,7 @@ jobs:
                   fi
 
             - name: Comment result on the source PR
+              if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' }}
               uses: actions/github-script@v7
               with:
                   script: |
@@ -123,7 +121,7 @@ jobs:
                       if (!prNumber) return;
                       const summary = `${{ toJSON(steps.apply_autover.outputs.summary) }}`.replace(/^"|"$/g, "");
                       const body = summary && summary.trim().length
-                        ? `✅ **autver** applied on \`main\`\n\n\`${summary}\``
+                        ? `✅ **autover** applied on \`main\`\n\n\`${summary}\``
                         : "ℹ️ **autover** ran on `main` but produced no changes.";
                       await github.rest.issues.createComment({
                         owner: context.repo.owner,
