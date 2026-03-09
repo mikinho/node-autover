@@ -606,8 +606,11 @@ async function doInit(repoRoot) {
  * @return {void}
  */
 async function doInstall(repoRoot) {
+    const customHooksPath = runGit(["config", "--get", "core.hooksPath"]);
     const gdir = gitDir() || path.join(repoRoot, ".git");
-    const hooksDir = path.join(gdir, "hooks");
+    const hooksDir = customHooksPath
+        ? path.resolve(repoRoot, customHooksPath)
+        : path.join(gdir, "hooks");
     await fsp.mkdir(hooksDir, { recursive: true });
     const posixHookPath = path.join(hooksDir, "post-commit");
     const windowsHookPath = path.join(hooksDir, "post-commit.cmd");
