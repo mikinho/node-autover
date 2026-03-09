@@ -508,9 +508,11 @@ function* recursivePackageJsons(repoRoot) {
                 hasPJ = true;
             }
         }
-        // Stop recursing once a package.json is found — each package
-        // owns its own subtree (nested node_modules, fixtures, etc.).
-        if (hasPJ) {
+        // Stop recursing once a *child* package.json is found — each
+        // package owns its own subtree (nested node_modules, fixtures,
+        // etc.).  The repo root is always explored so that workspace
+        // directories are discovered even when a root package.json exists.
+        if (hasPJ && dir !== repoRoot) {
             continue;
         }
         for (const e of entries) {
@@ -754,8 +756,8 @@ function parseArgs(argv) {
             out.guardUnchanged = true;
         } else if (a === "--patch" && i + 1 < argv.length) {
             const n = Number(argv[++i]);
-            if (!Number.isInteger(n)) {
-                console.error("--patch requires an integer");
+            if (!Number.isInteger(n) || n < 0) {
+                console.error("autover: --patch requires a non-negative integer");
                 process.exit(2);
             }
             out.patch = n;
@@ -889,6 +891,10 @@ if (_isDirectRun)
         // cfg already has CLI > config > defaults via spread order above;
         // normalize the values we need going forward.
         cfg.format = String(cfg.format).toLowerCase();
+        if (cfg.format !== "build" && cfg.format !== "pre") {
+            console.error(`autover: format must be "build" or "pre", got "${cfg.format}"`);
+            process.exit(2);
+        }
         cfg.workspaces = Boolean(cfg.workspaces);
         cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
         cfg.quiet = Boolean(cfg.quiet);
@@ -897,9 +903,13 @@ if (_isDirectRun)
         const skipOnCI = Boolean(cfg.skipOnCI);
         const tagOnChange = Boolean(cfg.tagOnChange);
 
-        if (cfg.patch != null && !Number.isInteger(cfg.patch)) {
+        if (cfg.patch != null) {
             const n = Number(cfg.patch);
-            cfg.patch = Number.isNaN(n) ? null : n;
+            if (!Number.isInteger(n) || n < 0) {
+                console.error("autover: patch must be a non-negative integer");
+                process.exit(2);
+            }
+            cfg.patch = n;
         }
         if (skipOnCI && process.env.CI) {
             if (!cfg.quiet && (cfg.verbose || cfg.short)) {
@@ -936,6 +946,10 @@ if (_isDirectRun)
             targets = targets.filter((pj) => subtreeHasStaged(pj, stagedAbs));
         }
 
+        if (cfg.file && cfg.workspaces) {
+            console.error("autover: --file and --workspaces are mutually exclusive");
+            process.exit(2);
+        }
         if (cfg.format === "pre" && cfg.patch != null) {
             console.error("autover: --patch is not supported with --format pre");
             process.exit(2);

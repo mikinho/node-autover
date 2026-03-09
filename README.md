@@ -30,7 +30,7 @@ git commit -sm "change";  # hook amends with version if needed
 
 ## CLI
 
-```
+```text
 npx autover [--file PATH | --workspaces]
              [--format build|pre] [--patch N]
              [--guard-unchanged] [--no-amend] [--dry-run]
