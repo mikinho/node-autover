@@ -73,7 +73,6 @@ const defaultOptions = {
     install: false,
     version: false,
     help: false,
-    // Add this for clarity and robustness
     lockPath: null,
 };
 
@@ -257,7 +256,7 @@ function fromGitEpoch(ts) {
 }
 
 /**
- * Read and parse JSON from a file (with existence check).
+ * Read and parse JSON from a file.
  *
  * @method readJSON
  * @async
@@ -530,12 +529,11 @@ function* recursivePackageJsons(repoRoot) {
  * Check if any staged file resides under the workspace directory of a given package.json.
  *
  * @method subtreeHasStaged
- * @param {String} repoRoot Repo root.
  * @param {String} packageJsonPath Absolute path to a `package.json`.
  * @param {Array<String>} stagedAbs Absolute staged file paths.
  * @return {Boolean}
  */
-function subtreeHasStaged(repoRoot, packageJsonPath, stagedAbs) {
+function subtreeHasStaged(packageJsonPath, stagedAbs) {
     const workspaceDir = path.dirname(packageJsonPath);
     for (const f of stagedAbs) {
         try {
@@ -636,6 +634,11 @@ IF ERRORLEVEL 1 (
 )
 npx autover
 `;
+    for (const hp of [posixHookPath, windowsHookPath]) {
+        if (fs.existsSync(hp)) {
+            console.warn(`autover: overwriting existing hook: ${hp}`);
+        }
+    }
     await fsp.writeFile(posixHookPath, posixHook, "utf8");
     await fsp.chmod(posixHookPath, 0o755);
     await fsp.writeFile(windowsHookPath, windowsHook, "utf8");
@@ -741,7 +744,12 @@ function parseArgs(argv) {
         } else if (a === "--short") {
             out.short = true;
         } else if (a === "--format" && i + 1 < argv.length) {
-            out.format = argv[++i].toLowerCase();
+            const fmt = argv[++i].toLowerCase();
+            if (fmt !== "build" && fmt !== "pre") {
+                console.error(`--format must be "build" or "pre", got "${fmt}"`);
+                process.exit(2);
+            }
+            out.format = fmt;
         } else if (a === "--guard-unchanged") {
             out.guardUnchanged = true;
         } else if (a === "--patch" && i + 1 < argv.length) {
@@ -804,9 +812,14 @@ export {
     fromGitEpoch,
 };
 
-const _isDirectRun =
-    process.argv[1] &&
-    fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+let _isDirectRun = false;
+try {
+    _isDirectRun =
+        process.argv[1] &&
+        fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+} catch {
+    // Not run directly (e.g., node -e, piped stdin, missing path).
+}
 
 if (_isDirectRun)
 (async function main() {
@@ -920,7 +933,7 @@ if (_isDirectRun)
         if (cfg.workspaces) {
             const rels = stagedRelPaths(repoRoot);
             stagedAbs = rels.map((r) => path.resolve(repoRoot, r));
-            targets = targets.filter((pj) => subtreeHasStaged(repoRoot, pj, stagedAbs));
+            targets = targets.filter((pj) => subtreeHasStaged(pj, stagedAbs));
         }
 
         if (cfg.format === "pre" && cfg.patch != null) {

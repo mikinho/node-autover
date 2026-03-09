@@ -19,8 +19,6 @@ jobs:
     preview:
         if: ${{ github.event_name == 'pull_request' }}
         runs-on: ubuntu-latest
-        env:
-            CI: "true"
         steps:
             - uses: actions/checkout@v4
             - uses: actions/setup-node@v4

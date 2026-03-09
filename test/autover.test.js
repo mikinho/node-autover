@@ -273,6 +273,21 @@ describe("parseArgs", () => {
         }
     });
 
+    it("exits on invalid --format", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--format", "foo"]), /exit/);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
     it("exits on float --patch", () => {
         const original = process.exit;
         let exitCode = null;
