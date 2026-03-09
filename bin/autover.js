@@ -509,6 +509,8 @@ function* recursivePackageJsons(repoRoot) {
                 hasPJ = true;
             }
         }
+        // Stop recursing once a package.json is found — each package
+        // owns its own subtree (nested node_modules, fixtures, etc.).
         if (hasPJ) {
             continue;
         }
