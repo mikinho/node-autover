@@ -187,7 +187,7 @@ function committerISO() {
  */
 function authorTS() {
     return runGit(["show", "-s", "--format=%at"]);
-} // seconds since epoch
+}
 
 /**
  * Return a list of staged file paths (relative to repo).
@@ -289,23 +289,18 @@ async function atomicWriteJSON(p, data) {
  *
  * @method parseMMP
  * @param {String} v Version string (may include build/prerelease).
- * @param {String} [fallback="1.0.0"] Fallback version when parsing fails.
  * @return {Array<Number>} [major, minor, patch]
  */
-function parseMMP(v, fallback = "1.0.0") {
-    try {
-        const core = v.split("+", 1)[0].split("-", 1)[0];
-        const parts = core
-            .split(".")
-            .slice(0, 3)
-            .map((x) => parseInt(x, 10));
-        while (parts.length < 3) {
-            parts.push(0);
-        }
-        return parts;
-    } catch {
-        return fallback.split(".").map((x) => parseInt(x, 10));
+function parseMMP(v) {
+    const core = v.split("+", 1)[0].split("-", 1)[0];
+    const parts = core
+        .split(".")
+        .slice(0, 3)
+        .map((x) => parseInt(x, 10));
+    while (parts.length < 3) {
+        parts.push(0);
     }
+    return parts;
 }
 
 /**
@@ -449,7 +444,7 @@ async function detectWorkspaceFiles(repoRoot) {
     try {
         data = JSON.parse(await fsp.readFile(rootPkg, "utf8"));
     } catch (e) {
-        console.warn(`autover: Failed to parse ${rootPkg}: ${e.message}`);
+        console.warn(`autover: failed to parse ${rootPkg}: ${e.message}`);
         return null;
     }
     const ws = data.workspaces;
@@ -459,7 +454,7 @@ async function detectWorkspaceFiles(repoRoot) {
     let patterns = [];
     if (Array.isArray(ws)) {
         patterns = ws;
-    } else if (ws && Array.isArray(ws.packages)) {
+    } else if (Array.isArray(ws.packages)) {
         patterns = ws.packages;
     }
     if (!patterns.length) {
@@ -635,7 +630,6 @@ npx autover
 
 /**
  * Stage files and amend the most recent commit (preserving author/message/dates).
- * Uses a lock file to avoid recursive hook loops.
  *
  * @method stageAndAmend
  * @async
@@ -1012,6 +1006,9 @@ if (_isDirectRun)
         if (!cfg.noAmend && !cfg.dryRun) {
             if (safeToAmend(repoRoot)) {
                 await stageAndAmend(changedFiles, { verbose: cfg.verbose });
+                if (process.exitCode) {
+                    return;
+                }
             } else if (cfg.verbose) {
                 console.log(
                     "autover: unsafe state (detached HEAD / merge / rebase); skipping amend.",
