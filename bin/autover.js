@@ -37,12 +37,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * @since 2.0.0
  */
 
-/**
- * autover: npx CLI — strict SemVer build-metadata versioner for Node projects.
- * Default: X.Y.Z+<minutesSinceJan1UTC>.<gitsha>
- * Pre:     X.Y.<minutesSinceJan1UTC>-<gitsha>  (--format pre)
- */
-
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -427,24 +421,15 @@ async function removeLock(p) {
 }
 
 /**
- * Return whether a file is already staged (to avoid clobbering).
+ * Build a Set of absolute paths for all currently staged files.
  *
- * @method isStagedFile
+ * @method stagedAbsSet
  * @param {String} repoRoot Repo root.
- * @param {String} absPath Absolute file path.
- * @return {Boolean}
+ * @return {Set<String>} Absolute staged file paths.
  */
-function isStagedFile(repoRoot, absPath) {
-    const rel = path.relative(repoRoot, absPath).replace(/\\/g, "/");
-    const res = spawnSync("git", ["diff", "--name-only", "--cached", "--", rel], {
-        cwd: repoRoot,
-        encoding: "utf8",
-    });
-    if (res.status !== 0) {
-        return false;
-    }
-    const out = (res.stdout || "").split(/\r?\n/).filter(Boolean);
-    return out.includes(rel);
+function stagedAbsSet(repoRoot) {
+    const rels = stagedRelPaths(repoRoot);
+    return new Set(rels.map((r) => path.resolve(repoRoot, r)));
 }
 
 /**
@@ -670,7 +655,8 @@ async function stageAndAmend(filesToAdd, { verbose }) {
         const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
         if (res.status !== 0) {
             console.error(`autover: git add failed for ${f}`);
-            process.exit(1);
+            process.exitCode = 1;
+            return;
         }
     }
     const env = { ...process.env };
@@ -686,7 +672,7 @@ async function stageAndAmend(filesToAdd, { verbose }) {
     const res = spawnSync("git", args, { encoding: "utf8", env });
     if (res.status !== 0) {
         console.error("autover: git commit --amend failed.");
-        process.exit(1);
+        process.exitCode = 1;
     }
 }
 
@@ -748,7 +734,7 @@ function parseArgs(argv) {
         } else if (a === "--format" && i + 1 < argv.length) {
             const fmt = argv[++i].toLowerCase();
             if (fmt !== "build" && fmt !== "pre") {
-                console.error(`--format must be "build" or "pre", got "${fmt}"`);
+                console.error(`autover: --format must be "build" or "pre", got "${fmt}"`);
                 process.exit(2);
             }
             out.format = fmt;
@@ -762,7 +748,7 @@ function parseArgs(argv) {
             }
             out.patch = n;
         } else {
-            console.error(`Unknown arg: ${a}`);
+            console.error(`autover: unknown arg: ${a}`);
             process.exit(2);
         }
     }
@@ -839,17 +825,17 @@ if (_isDirectRun)
     const [g1, g2, g3] = versionTuple(gv);
     const ok = g1 > 1 || (g1 === 1 && (g2 > 8 || (g2 === 8 && g3 >= 2))); // >= 1.8.2
     if (!ok) {
-        console.error("1.8.2 or newer is required");
+        console.error("autover: git 1.8.2 or newer is required");
         process.exit(1);
     }
     if (!isGitRepo()) {
-        console.error("Not inside a git repository.");
+        console.error("autover: not inside a git repository");
         process.exit(1);
     }
 
     const repoRoot = gitTopDir();
     if (!repoRoot) {
-        console.error("Unable to resolve repository root.");
+        console.error("autover: unable to resolve repository root");
         process.exit(1);
     }
 
@@ -893,7 +879,8 @@ if (_isDirectRun)
         cfg.format = String(cfg.format).toLowerCase();
         if (cfg.format !== "build" && cfg.format !== "pre") {
             console.error(`autover: format must be "build" or "pre", got "${cfg.format}"`);
-            process.exit(2);
+            process.exitCode = 2;
+            return;
         }
         cfg.workspaces = Boolean(cfg.workspaces);
         cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
@@ -907,9 +894,20 @@ if (_isDirectRun)
             const n = Number(cfg.patch);
             if (!Number.isInteger(n) || n < 0) {
                 console.error("autover: patch must be a non-negative integer");
-                process.exit(2);
+                process.exitCode = 2;
+                return;
             }
             cfg.patch = n;
+        }
+        if (cfg.file && cfg.workspaces) {
+            console.error("autover: --file and --workspaces are mutually exclusive");
+            process.exitCode = 2;
+            return;
+        }
+        if (cfg.format === "pre" && cfg.patch != null) {
+            console.error("autover: --patch is not supported with --format pre");
+            process.exitCode = 2;
+            return;
         }
         if (skipOnCI && process.env.CI) {
             if (!cfg.quiet && (cfg.verbose || cfg.short)) {
@@ -939,20 +937,10 @@ if (_isDirectRun)
         targets = Array.from(new Set(targets.filter((p) => fs.existsSync(p))));
 
         // staged gating for workspaces
-        let stagedAbs = [];
+        const staged = stagedAbsSet(repoRoot);
         if (cfg.workspaces) {
-            const rels = stagedRelPaths(repoRoot);
-            stagedAbs = rels.map((r) => path.resolve(repoRoot, r));
-            targets = targets.filter((pj) => subtreeHasStaged(pj, stagedAbs));
-        }
-
-        if (cfg.file && cfg.workspaces) {
-            console.error("autover: --file and --workspaces are mutually exclusive");
-            process.exit(2);
-        }
-        if (cfg.format === "pre" && cfg.patch != null) {
-            console.error("autover: --patch is not supported with --format pre");
-            process.exit(2);
+            const stagedArr = Array.from(staged);
+            targets = targets.filter((pj) => subtreeHasStaged(pj, stagedArr));
         }
 
         const commitid = describeShort() || "unknown";
@@ -989,25 +977,20 @@ if (_isDirectRun)
             if (oldVer === newVer) {
                 continue;
             }
-            if (isStagedFile(repoRoot, pj)) {
+            if (staged.has(pj)) {
                 if (cfg.verbose) {
                     console.log(`autover: ${pj} already staged; skipping write.`);
                 }
                 continue;
             }
 
-            if (cfg.dryRun) {
-                changedFiles.push(pj);
-                if (!firstChangedVersion) {
-                    firstChangedVersion = newVer;
-                }
-            } else {
+            if (!cfg.dryRun) {
                 pkg.version = newVer;
                 await atomicWriteJSON(pj, pkg);
-                changedFiles.push(pj);
-                if (!firstChangedVersion) {
-                    firstChangedVersion = newVer;
-                }
+            }
+            changedFiles.push(pj);
+            if (!firstChangedVersion) {
+                firstChangedVersion = newVer;
             }
         }
 
@@ -1051,7 +1034,7 @@ if (_isDirectRun)
 
         if (!cfg.quiet && cfg.verbose) {
             const when = isoZ(lastDate || new Date());
-            console.log(`${"git commit".padEnd(13)} = ${describeShort()}`);
+            console.log(`${"git commit".padEnd(13)} = ${commitid}`);
             console.log(`${"author ts".padEnd(13)} = ${gitTs || "n/a"}`);
             console.log(`${"datetime".padEnd(13)} = ${when}`);
             console.log(`${"changed".padEnd(13)} = ${changedFiles.length} file(s)`);
