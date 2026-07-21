@@ -6,12 +6,13 @@ Copyright (c) 2025-2026 Michael Welter <me@mikinho.com>
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A strict SemVer build-metadata versioner for Node.js projects. Stamps every commit with a deterministic version derived
-from the author timestamp and short SHA, then amends the commit in place. Workspaces-aware (Yarn/NPM/PNPM) with staged-
-change gating and a reentrancy lock to prevent recursive hook loops.
+from the author timestamp and the triggering commit's short SHA, then amends the commit in place. Workspaces-aware
+(Yarn/NPM/PNPM) with staged-change gating and a reentrancy lock to prevent recursive hook loops.
 
 ## Features
 
-- **Build Metadata (default):** `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>` — fully SemVer-compliant, sorts by commit time.
+- **Build Metadata (default):** `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>` — fully SemVer-compliant, sorts by commit time;
+  `<gitsha>` is always the raw abbreviated SHA, never a tag-relative `git describe` value.
 - **Pre-release Mode:** `X.Y.<minutesSinceJan1UTC>-<gitsha>` (`--format pre`) for channels that require a prerelease
   identifier.
 - **Workspace-Aware:** Discovers packages via `workspaces` in `package.json` or recursive `package.json` scan; only

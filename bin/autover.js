@@ -147,16 +147,14 @@ function gitDir() {
 }
 
 /**
- * Describe the current commit (prefer tag+abbrev or short SHA).
+ * Return the triggering commit's abbreviated object ID.
  *
- * @method describeShort
+ * @method shortCommitId
+ * @param {String} [cwd] Optional repository working directory.
  * @return {String|null}
  */
-function describeShort() {
-    return (
-        runGit(["describe", "--always", "--dirty", "--abbrev=7"]) ||
-        runGit(["rev-parse", "--short", "HEAD"])
-    );
+function shortCommitId(cwd) {
+    return runGit(["rev-parse", "--short=7", "HEAD"], cwd ? { cwd } : {});
 }
 
 /**
@@ -777,12 +775,6 @@ function printHelp() {
 /* Entry Point                                                              */
 /* ------------------------------------------------------------------------ */
 
-/**
- * Program entry point (IIFE). Orchestrates config, targets, versioning, and amend.
- *
- * @method main
- * @private
- */
 export {
     parseMMP,
     makeVersionBuild,
@@ -792,6 +784,7 @@ export {
     versionTuple,
     isoZ,
     fromGitEpoch,
+    shortCommitId,
 };
 
 let _isDirectRun = false;
@@ -803,8 +796,15 @@ try {
     // Not run directly (e.g., node -e, piped stdin, missing path).
 }
 
-if (_isDirectRun)
-(async function main() {
+/**
+ * Program entry point. Orchestrates config, targets, versioning, and amend.
+ *
+ * @method main
+ * @async
+ * @private
+ * @return {void}
+ */
+async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
         printHelp();
@@ -937,7 +937,7 @@ if (_isDirectRun)
             targets = targets.filter((pj) => subtreeHasStaged(pj, stagedArr));
         }
 
-        const commitid = describeShort() || "unknown";
+        const commitid = shortCommitId() || "unknown";
         const gitTs = authorTS();
 
         const changedFiles = [];
@@ -1039,4 +1039,8 @@ if (_isDirectRun)
     } finally {
         await removeLock(lk);
     }
-})();
+}
+
+if (_isDirectRun) {
+    await main();
+}

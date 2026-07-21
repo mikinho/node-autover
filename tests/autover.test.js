@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import {
     parseMMP,
     makeVersionBuild,
@@ -9,7 +13,52 @@ import {
     versionTuple,
     isoZ,
     fromGitEpoch,
+    shortCommitId,
 } from "../bin/autover.js";
+
+/* ------------------------------------------------------------------ */
+/* shortCommitId                                                       */
+/* ------------------------------------------------------------------ */
+
+describe("shortCommitId", () => {
+    it("returns the raw SHA when a tagged ancestor and dirty files exist", (t) => {
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), "autover-sha-"));
+        t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+
+        const git = (...args) => {
+            const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+            assert.equal(result.status, 0, result.stderr);
+            return result.stdout.trim();
+        };
+
+        git("init", "--quiet");
+        git("config", "user.name", "Autover Test");
+        git("config", "user.email", "autover@example.test");
+        git("config", "commit.gpgsign", "false");
+        git("config", "tag.gpgsign", "false");
+        git("config", "core.hooksPath", path.join(repo, ".no-hooks"));
+
+        const fixture = path.join(repo, "fixture.txt");
+        fs.writeFileSync(fixture, "tagged\n", "utf8");
+        git("add", "fixture.txt");
+        git("commit", "--quiet", "-m", "tagged base");
+        git("tag", "-a", "v1.5.1", "-m", "v1.5.1");
+
+        fs.appendFileSync(fixture, "committed\n", "utf8");
+        git("add", "fixture.txt");
+        git("commit", "--quiet", "-m", "later commit");
+        fs.appendFileSync(fixture, "dirty\n", "utf8");
+
+        const described = git("describe", "--always", "--dirty", "--abbrev=7");
+        const expected = git("rev-parse", "--short=7", "HEAD");
+        const actual = shortCommitId(repo);
+
+        assert.match(described, /^v1\.5\.1-1-g[0-9a-f]+-dirty$/u);
+        assert.equal(actual, expected);
+        assert.match(actual, /^[0-9a-f]{7,}$/u);
+        assert.doesNotMatch(actual, /^v1\.5\.1-/u);
+    });
+});
 
 /* ------------------------------------------------------------------ */
 /* parseMMP                                                            */
