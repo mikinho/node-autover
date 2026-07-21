@@ -1,5 +1,7 @@
 {
     "format": "build",
+    "metadata": "timestamp-sha",
+    "separateCommit": false,
     "workspaces": false,
     "guardUnchanged": true,
     "skipOnCI": true,

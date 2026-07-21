@@ -7,9 +7,7 @@ on:
         branches: [main]
     workflow_dispatch:
 
-permissions:
-    contents: write
-    pull-requests: write
+permissions: {}
 
 env:
     REQUIRED_LABEL: autover-apply
@@ -19,16 +17,31 @@ jobs:
     preview:
         if: ${{ github.event_name == 'pull_request' }}
         runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            pull-requests: write
         steps:
             - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
             - uses: actions/setup-node@v4
               with:
-                  node-version: "18"
+                  node-version: "22"
+                  cache: npm
+            - name: Install dependencies
+              run: npm ci
             - name: Run autover (dry-run)
               id: autover
               run: |
                   set -euo pipefail
-                  line="$(npx --yes autover --workspaces --guard-unchanged --no-amend --dry-run --short || true)"
+                  set +e
+                  line="$(node ./bin/autover.js --workspaces --guard-unchanged --no-amend --no-skip-ci --dry-run --short)"
+                  status=$?
+                  set -e
+                  if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
+                    exit "$status"
+                  fi
                   echo "$line"
                   echo "summary=${line//'%'/'%25'}" >> "$GITHUB_OUTPUT"
             - name: Comment on PR with version summary
@@ -47,15 +60,22 @@ jobs:
                       });
 
     apply:
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' }}
         runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: write
+            pull-requests: write
         steps:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
             - uses: actions/setup-node@v4
               with:
-                  node-version: "18"
+                  node-version: "22"
+                  cache: npm
+            - name: Install dependencies
+              run: npm ci
             - name: Identify PR associated with this push
               id: pr
               uses: actions/github-script@v7
@@ -90,13 +110,26 @@ jobs:
               id: apply_autover
               run: |
                   set -euo pipefail
-                  line="$(npx --yes autover --workspaces --guard-unchanged --short || true)"
+                  set +e
+                  line="$(node ./bin/autover.js --workspaces --guard-unchanged --no-amend --no-skip-ci --short)"
+                  status=$?
+                  set -e
+                  if [ "$status" -ne 0 ] && [ "$status" -ne 4 ]; then
+                    exit "$status"
+                  fi
                   echo "$line"
                   echo "summary=${line//'%'/'%25'}" >> "$GITHUB_OUTPUT"
 
-            - name: Push amended commit back
+            - name: Commit and push version files
               if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' }}
-              run: git push --force-with-lease
+              run: |
+                  if [ -z "$(git status --porcelain)" ]; then
+                    echo "No version changes to commit."
+                    exit 0
+                  fi
+                  git add -u
+                  git commit -m "chore(version): update generated versions" -m "Autover-Version: true"
+                  git push
 
             - name: Optionally create tag from autover output
               if: ${{ steps.pr.outputs.found == 'true' && steps.pr.outputs.has_required == 'true' && env.CREATE_TAG == 'true' }}
@@ -106,8 +139,12 @@ jobs:
                   ver="$(echo "$line" | awk -F'|' '{gsub(/^ *| *$/,"",$2); print $2}')"
                   if [ -n "$ver" ] && [ "$ver" != "unchanged" ]; then
                     tag="v$(echo "$ver" | sed 's/[+-].*$//')"
-                    git tag -f "$tag"
-                    git push -f origin "$tag"
+                    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+                      echo "Tag $tag already exists; skipping."
+                    else
+                      git tag "$tag"
+                      git push origin "$tag"
+                    fi
                   fi
 
             - name: Comment result on the source PR

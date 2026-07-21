@@ -42,6 +42,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import fg from "fast-glob";
 
 const _require = createRequire(import.meta.url);
@@ -61,6 +62,8 @@ const defaultOptions = {
     quiet: false,
     short: false,
     format: "build",
+    metadata: "timestamp-sha",
+    separateCommit: false,
     guardUnchanged: false,
     patch: null,
     init: false,
@@ -209,6 +212,34 @@ function stagedRelPaths(repoRoot) {
 }
 
 /**
+ * Return paths changed by the triggering commit, including an initial commit.
+ *
+ * @method committedRelPaths
+ * @param {String} repoRoot Absolute path to repo root.
+ * @return {Array<String>}
+ */
+function committedRelPaths(repoRoot) {
+    const res = spawnSync(
+        "git",
+        [
+            "diff-tree",
+            "--root",
+            "--first-parent",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            "HEAD",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+    );
+    if (res.status !== 0) {
+        return [];
+    }
+    return (res.stdout || "").split("\0").filter(Boolean);
+}
+
+/**
  * Convert a Date to ISO-8601 string with Z suffix (no milliseconds).
  *
  * @method isoZ
@@ -309,16 +340,18 @@ function parseMMP(v) {
  * @param {String} commitid Short commit id (e.g., "abc1234").
  * @param {String|null} gitTs Author time (epoch seconds) or null.
  * @param {Number|null} patchOverride Optional patch override (forces Z).
+ * @param {String} metadata Build metadata mode (`timestamp` or `timestamp-sha`).
  * @return {Array} [version:String, date:Date]
  */
-function makeVersionBuild(pkg, commitid, gitTs, patchOverride) {
+function makeVersionBuild(pkg, commitid, gitTs, patchOverride, metadata = "timestamp-sha") {
     const d = fromGitEpoch(gitTs);
     let [x, y, z] = parseMMP(String(pkg.version ?? "1.0.0"));
     if (Number.isInteger(patchOverride)) {
         z = patchOverride;
     }
     const stamp = minutesSinceYearStart(d);
-    const ver = `${x}.${y}.${z}+${stamp}.${commitid}`;
+    const suffix = metadata === "timestamp" ? `${stamp}` : `${stamp}.${commitid}`;
+    const ver = `${x}.${y}.${z}+${suffix}`;
     return [ver, d];
 }
 
@@ -348,11 +381,12 @@ function makeVersionPre(pkg, commitid, gitTs) {
  * @return {Boolean}
  */
 function safeToAmend(repoRoot) {
-    const branch = runGit(["symbolic-ref", "-q", "--short", "HEAD"]);
+    const branch = runGit(["symbolic-ref", "-q", "--short", "HEAD"], { cwd: repoRoot });
     if (!branch) {
         return false;
     }
-    const gdir = gitDir() || path.join(repoRoot, ".git");
+    const rawGitDir = runGit(["rev-parse", "--git-dir"], { cwd: repoRoot });
+    const gdir = rawGitDir ? path.resolve(repoRoot, rawGitDir) : path.join(repoRoot, ".git");
     if (fs.existsSync(path.join(gdir, "MERGE_HEAD"))) {
         return false;
     }
@@ -363,6 +397,17 @@ function safeToAmend(repoRoot) {
         return false;
     }
     return true;
+}
+
+/**
+ * Return true when HEAD is an autover-generated commit.
+ *
+ * @method isAutoverCommit
+ * @return {Boolean}
+ */
+function isAutoverCommit() {
+    const body = runGit(["show", "-s", "--format=%B", "HEAD"]);
+    return Boolean(body && /^Autover-Version: true$/mu.test(body));
 }
 
 /**
@@ -423,6 +468,17 @@ async function removeLock(p) {
 function stagedAbsSet(repoRoot) {
     const rels = stagedRelPaths(repoRoot);
     return new Set(rels.map((r) => path.resolve(repoRoot, r)));
+}
+
+/**
+ * Build a Set of absolute paths changed by the triggering commit.
+ *
+ * @method committedAbsSet
+ * @param {String} repoRoot Repo root.
+ * @return {Set<String>}
+ */
+function committedAbsSet(repoRoot) {
+    return new Set(committedRelPaths(repoRoot).map((r) => path.resolve(repoRoot, r)));
 }
 
 /**
@@ -565,6 +621,8 @@ async function doInit(repoRoot) {
     }
     const body = {
         format: "build",
+        metadata: "timestamp-sha",
+        separateCommit: false,
         workspaces: true,
         guardUnchanged: true,
         skipOnCI: true,
@@ -669,6 +727,103 @@ async function stageAndAmend(filesToAdd, { verbose }) {
 }
 
 /**
+ * Stage generated files and create a dedicated version commit.
+ *
+ * @method stageAndCommit
+ * @param {Array<String>} filesToAdd Absolute file paths to stage.
+ * @param {Object} opts Options.
+ * @param {Boolean} opts.verbose Verbose logging.
+ * @return {void}
+ */
+async function stageAndCommit(filesToAdd, { verbose }) {
+    if (!filesToAdd.length) {
+        return;
+    }
+    for (const f of filesToAdd) {
+        const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
+        if (res.status !== 0) {
+            console.error(`autover: git add failed for ${f}`);
+            process.exitCode = 1;
+            return;
+        }
+    }
+    const res = spawnSync(
+        "git",
+        [
+            "commit",
+            "--no-verify",
+            "-m",
+            "chore(version): update generated versions",
+            "-m",
+            "Autover-Version: true",
+        ],
+        { encoding: "utf8" },
+    );
+    if (res.status !== 0) {
+        console.error("autover: version commit failed.");
+        process.exitCode = 1;
+    } else if (verbose) {
+        console.log("autover: created a separate version commit.");
+    }
+}
+
+/**
+ * Synchronize an npm lockfile entry with a package version.
+ *
+ * @method syncLockfileVersion
+ * @async
+ * @param {String} repoRoot Repository root.
+ * @param {String} packageJsonPath Package manifest path.
+ * @param {String} version Generated version.
+ * @param {Boolean} dryRun Whether writes are disabled.
+ * @return {String|null} Changed lockfile path, or null.
+ */
+async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
+    const packageDir = path.dirname(packageJsonPath);
+    let current = packageDir;
+    let lockfilePath = null;
+    while (current === repoRoot || current.startsWith(`${repoRoot}${path.sep}`)) {
+        for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
+            const candidate = path.join(current, name);
+            if (fs.existsSync(candidate)) {
+                lockfilePath = candidate;
+                break;
+            }
+        }
+        if (lockfilePath || current === repoRoot) {
+            break;
+        }
+        current = path.dirname(current);
+    }
+    if (!lockfilePath) {
+        return null;
+    }
+
+    const lock = await readJSON(lockfilePath);
+    let changed = false;
+    const lockRoot = path.dirname(lockfilePath);
+    const rel = path.relative(lockRoot, packageDir).replace(/\\/gu, "/");
+    const packageKey = rel === "" ? "" : rel;
+    if (packageKey === "" && lock.version !== version) {
+        lock.version = version;
+        changed = true;
+    }
+    if (lock.packages && lock.packages[packageKey]?.version !== version) {
+        if (lock.packages[packageKey]) {
+            lock.packages[packageKey].version = version;
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return null;
+    }
+    if (!dryRun) {
+        await atomicWriteJSON(lockfilePath, lock);
+    }
+    return lockfilePath;
+}
+
+/**
  * Optionally create/update a lightweight tag like `vX.Y.Z` when changes occur.
  *
  * @method maybeTag
@@ -684,7 +839,7 @@ function maybeTag(tagOnChange, version, changed, verbose) {
     }
     const core = version.split("+", 1)[0].split("-", 1)[0];
     const tag = `v${core}`;
-    const res = spawnSync("git", ["tag", "-f", tag], { encoding: "utf8" });
+    const res = spawnSync("git", ["tag", tag], { encoding: "utf8" });
     if (res.status === 0 && verbose) {
         console.log(`autover: tagged ${tag}`);
     }
@@ -715,8 +870,12 @@ function parseArgs(argv) {
             out.workspaces = true;
         } else if (a === "--no-amend") {
             out.noAmend = true;
+        } else if (a === "--separate-commit") {
+            out.separateCommit = true;
         } else if (a === "--dry-run") {
             out.dryRun = true;
+        } else if (a === "--no-skip-ci") {
+            out.skipOnCI = false;
         } else if (a === "-v" || a === "--verbose") {
             out.verbose = true;
         } else if (a === "-q" || a === "--quiet") {
@@ -730,6 +889,15 @@ function parseArgs(argv) {
                 process.exit(2);
             }
             out.format = fmt;
+        } else if (a === "--metadata" && i + 1 < argv.length) {
+            const metadata = argv[++i].toLowerCase();
+            if (metadata !== "timestamp" && metadata !== "timestamp-sha") {
+                console.error(
+                    `autover: --metadata must be "timestamp" or "timestamp-sha", got "${metadata}"`,
+                );
+                process.exit(2);
+            }
+            out.metadata = metadata;
         } else if (a === "--guard-unchanged") {
             out.guardUnchanged = true;
         } else if (a === "--patch" && i + 1 < argv.length) {
@@ -761,8 +929,9 @@ function printHelp() {
             "Usage:",
             "  npx autover [--file PATH | --workspaces]",
             "               [--format build|pre] [--patch N]",
-            "               [--guard-unchanged] [--no-amend] [--dry-run]",
-            "               [--verbose] [--quiet] [--short] [--init] [--install]",
+            "               [--metadata timestamp|timestamp-sha]",
+            "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]",
+            "               [--no-skip-ci] [--verbose] [--quiet] [--short] [--init] [--install]",
             "",
             "Examples:",
             "  npx autover",
@@ -791,7 +960,7 @@ let _isDirectRun = false;
 try {
     _isDirectRun =
         process.argv[1] &&
-        fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname);
+        fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 } catch {
     // Not run directly (e.g., node -e, piped stdin, missing path).
 }
@@ -860,8 +1029,8 @@ async function main() {
     const cfg = { ...defaultOptions, ...configOptions, ...args };
 
     // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
-    const lk = lockPath(cfg.lockPath);
-    if (!acquireLock(lk)) {
+    const lk = cfg.dryRun ? null : path.resolve(repoRoot, lockPath(cfg.lockPath));
+    if (lk && !acquireLock(lk)) {
         if (!cfg.quiet && (cfg.short || cfg.verbose)) {
             console.log("autover: lock present; exiting.");
         }
@@ -876,9 +1045,18 @@ async function main() {
             process.exitCode = 2;
             return;
         }
+        cfg.metadata = String(cfg.metadata).toLowerCase();
+        if (cfg.metadata !== "timestamp" && cfg.metadata !== "timestamp-sha") {
+            console.error(
+                `autover: metadata must be "timestamp" or "timestamp-sha", got "${cfg.metadata}"`,
+            );
+            process.exitCode = 2;
+            return;
+        }
         cfg.workspaces = Boolean(cfg.workspaces);
         cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
         cfg.quiet = Boolean(cfg.quiet);
+        cfg.separateCommit = Boolean(cfg.separateCommit);
 
         const rootAlso = Boolean(cfg.rootAlso);
         const skipOnCI = Boolean(cfg.skipOnCI);
@@ -898,8 +1076,18 @@ async function main() {
             process.exitCode = 2;
             return;
         }
+        if (cfg.noAmend && cfg.separateCommit) {
+            console.error("autover: --no-amend and --separate-commit are mutually exclusive");
+            process.exitCode = 2;
+            return;
+        }
         if (cfg.format === "pre" && cfg.patch != null) {
             console.error("autover: --patch is not supported with --format pre");
+            process.exitCode = 2;
+            return;
+        }
+        if (cfg.format === "pre" && cfg.metadata !== "timestamp-sha") {
+            console.error("autover: --metadata is only supported with --format build");
             process.exitCode = 2;
             return;
         }
@@ -907,6 +1095,21 @@ async function main() {
             if (!cfg.quiet && (cfg.verbose || cfg.short)) {
                 console.log("autover: CI detected and skipOnCI=true; exiting.");
             }
+            return;
+        }
+        if (isAutoverCommit()) {
+            if (!cfg.quiet && (cfg.verbose || cfg.short)) {
+                console.log("autover: generated version commit detected; exiting.");
+            }
+            return;
+        }
+
+        // All repository-state checks happen before any generated file is written.
+        if (!cfg.noAmend && !cfg.dryRun && !safeToAmend(repoRoot)) {
+            console.error(
+                "autover: unsafe state (detached HEAD / merge / rebase); no files changed.",
+            );
+            process.exitCode = 1;
             return;
         }
 
@@ -933,14 +1136,16 @@ async function main() {
         // staged gating for workspaces
         const staged = stagedAbsSet(repoRoot);
         if (cfg.workspaces) {
-            const stagedArr = Array.from(staged);
-            targets = targets.filter((pj) => subtreeHasStaged(pj, stagedArr));
+            const committed = committedAbsSet(repoRoot);
+            const committedArr = Array.from(committed);
+            targets = targets.filter((pj) => subtreeHasStaged(pj, committedArr));
         }
 
         const commitid = shortCommitId() || "unknown";
         const gitTs = authorTS();
 
         const changedFiles = [];
+        const plans = [];
         let lastDate = null;
         let firstChangedVersion = null;
 
@@ -958,7 +1163,7 @@ async function main() {
             const [newVer, dt] =
                 cfg.format === "pre"
                     ? makeVersionPre(pkg, commitid, gitTs)
-                    : makeVersionBuild(pkg, commitid, gitTs, cfg.patch);
+                    : makeVersionBuild(pkg, commitid, gitTs, cfg.patch, cfg.metadata);
 
             lastDate = dt;
             const oldVer = String(pkg.version ?? "");
@@ -978,13 +1183,32 @@ async function main() {
                 continue;
             }
 
-            if (!cfg.dryRun) {
-                pkg.version = newVer;
-                await atomicWriteJSON(pj, pkg);
-            }
-            changedFiles.push(pj);
+            pkg.version = newVer;
+            plans.push({ packageJsonPath: pj, pkg, version: newVer });
             if (!firstChangedVersion) {
                 firstChangedVersion = newVer;
+            }
+        }
+
+        // Validate every matching lockfile before any package or lockfile is written.
+        for (const plan of plans) {
+            await syncLockfileVersion(repoRoot, plan.packageJsonPath, plan.version, true);
+        }
+
+        // Apply only after every target and lockfile has been read successfully.
+        for (const plan of plans) {
+            if (!cfg.dryRun) {
+                await atomicWriteJSON(plan.packageJsonPath, plan.pkg);
+            }
+            changedFiles.push(plan.packageJsonPath);
+            const lockfile = await syncLockfileVersion(
+                repoRoot,
+                plan.packageJsonPath,
+                plan.version,
+                cfg.dryRun,
+            );
+            if (lockfile && !changedFiles.includes(lockfile)) {
+                changedFiles.push(lockfile);
             }
         }
 
@@ -1004,21 +1228,22 @@ async function main() {
         }
 
         if (!cfg.noAmend && !cfg.dryRun) {
-            if (safeToAmend(repoRoot)) {
+            if (cfg.separateCommit) {
+                await stageAndCommit(changedFiles, { verbose: cfg.verbose });
+                if (process.exitCode) {
+                    return;
+                }
+            } else {
                 await stageAndAmend(changedFiles, { verbose: cfg.verbose });
                 if (process.exitCode) {
                     return;
                 }
-            } else if (cfg.verbose) {
-                console.log(
-                    "autover: unsafe state (detached HEAD / merge / rebase); skipping amend.",
-                );
             }
         } else if (cfg.verbose) {
             console.log("autover: --no-amend or --dry-run; skipping amend.");
         }
 
-        if (firstChangedVersion) {
+        if (firstChangedVersion && !cfg.dryRun) {
             maybeTag(tagOnChange, firstChangedVersion, changedFiles.length > 0, cfg.verbose);
         }
 
@@ -1037,7 +1262,9 @@ async function main() {
             console.log(`${"changed".padEnd(13)} = ${changedFiles.length} file(s)`);
         }
     } finally {
-        await removeLock(lk);
+        if (lk) {
+            await removeLock(lk);
+        }
     }
 }
 

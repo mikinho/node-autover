@@ -5,20 +5,26 @@ Copyright (c) 2025-2026 Michael Welter <me@mikinho.com>
 [![npm version](https://img.shields.io/npm/v/@mikinho/autover.svg)](https://www.npmjs.com/package/@mikinho/autover)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A strict SemVer build-metadata versioner for Node.js projects. Stamps every commit with a deterministic version derived
-from the author timestamp and the triggering commit's short SHA, then amends the commit in place. Workspaces-aware
-(Yarn/NPM/PNPM) with staged-change gating and a reentrancy lock to prevent recursive hook loops.
+A strict SemVer build-metadata versioner for Node.js projects. Stamps commits with a deterministic version derived from
+the author timestamp and, optionally, the triggering commit's short SHA. By default it amends the commit in place;
+projects can instead request a separate, marked version commit. Autover is workspace-aware (Yarn/NPM/PNPM), synchronizes
+npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops.
 
 ## Features
 
-- **Build Metadata (default):** `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>` — fully SemVer-compliant, sorts by commit time;
-  `<gitsha>` is always the raw abbreviated SHA, never a tag-relative `git describe` value.
+- **Build Metadata (default):** `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>` — fully SemVer-compliant; `<gitsha>` is always
+  the raw abbreviated SHA, never a tag-relative `git describe` value.
+- **Timestamp-Only Metadata:** `X.Y.Z+<minutesSinceJan1UTC>` with `--metadata timestamp`.
 - **Pre-release Mode:** `X.Y.<minutesSinceJan1UTC>-<gitsha>` (`--format pre`) for channels that require a prerelease
   identifier.
 - **Workspace-Aware:** Discovers packages via `workspaces` in `package.json` or recursive `package.json` scan; only
-  versions packages with staged changes.
+  versions packages changed by the triggering commit.
+- **Lockfile Synchronization:** Updates matching `package-lock.json` or `npm-shrinkwrap.json` version fields without
+  dependency resolution.
 - **Safe Amend:** Preserves author date, committer date, and commit message. Guards against detached HEAD, in-progress
   merges, and rebases.
+- **Optional Version Commit:** `--separate-commit` creates a marked follow-up commit whose version identifies the stable,
+  reachable triggering commit.
 - **Reentrancy Lock:** Atomic `O_EXCL` lock file prevents recursive post-commit hook loops.
 - **CI-Friendly:** `skipOnCI` silently exits when `CI=true`; `--guard-unchanged` returns exit code 4 for no-op runs.
 
@@ -44,20 +50,28 @@ git commit -sm "change";  # hook amends with version if needed
 ## Version Formats
 
 - **Build (default):** `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>`
+- **Build, timestamp only:** `X.Y.Z+<minutesSinceJan1UTC>` (`--metadata timestamp`)
 - **Pre-release:** `X.Y.<minutesSinceJan1UTC>-<gitsha>` (`--format pre`)
+
+`timestamp-sha` is the default metadata mode. In the default amend mode, the SHA is the pre-amend identity that
+triggered autover. With `--separate-commit`, it remains a reachable application commit immediately before the generated
+version commit.
 
 ## CLI
 
 ```text
 npx autover [--file PATH | --workspaces]
              [--format build|pre] [--patch N]
-             [--guard-unchanged] [--no-amend] [--dry-run]
+             [--metadata timestamp|timestamp-sha]
+             [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]
+             [--no-skip-ci]
              [--verbose] [--quiet] [--short]
              [--init] [--install]
 ```
 
-`--file` and `--workspaces` are mutually exclusive. `--patch` is not supported with `--format pre`. `--patch` must be a
-non-negative integer.
+`--file` and `--workspaces` are mutually exclusive, as are `--no-amend` and `--separate-commit`. `--metadata` applies to
+build format only. `--patch` is not supported with `--format pre` and must be a non-negative integer. `--no-skip-ci`
+explicitly overrides `skipOnCI` for a guarded CI workflow.
 
 ## Config
 
@@ -66,6 +80,8 @@ non-negative integer.
 ```json
 {
     "format": "build",
+    "metadata": "timestamp-sha",
+    "separateCommit": false,
     "workspaces": true,
     "guardUnchanged": true,
     "skipOnCI": true,
@@ -79,8 +95,15 @@ non-negative integer.
 }
 ```
 
-Unknown keys in `.autoverrc.json` produce a warning at runtime. Config values are validated the same way CLI arguments
-are — invalid `format` or `patch` values will error with exit code 2.
+Unknown keys in `.autoverrc.json` produce a warning at runtime. Invalid `format`, `metadata`, or `patch` values error with
+exit code 2.
+
+## CI
+
+CI should use a clean checkout, install the locked dependencies, run the local CLI with `--no-amend --no-skip-ci`, and
+create a normal follow-up commit only when generated files changed. Exit code `4` is the documented unchanged result;
+other nonzero statuses must fail the job. The included `autover.yml` demonstrates this guarded, label-controlled flow
+without force-pushing commits or tags.
 
 ## Exit Codes
 

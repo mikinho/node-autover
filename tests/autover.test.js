@@ -183,6 +183,13 @@ describe("makeVersionBuild", () => {
         assert.match(ver, /^1\.2\.3\+\d+\.abc1234$/);
     });
 
+    it("can omit the commit id from build metadata", () => {
+        const pkg = { version: "1.2.3" };
+        const [ver] = makeVersionBuild(pkg, "abc1234", "1735689600", null, "timestamp");
+        assert.match(ver, /^1\.2\.3\+\d+$/u);
+        assert.doesNotMatch(ver, /abc1234/u);
+    });
+
     it("applies patch override", () => {
         const pkg = { version: "1.2.3" };
         const [ver] = makeVersionBuild(pkg, "abc1234", "1735689600", 99);
@@ -266,6 +273,8 @@ describe("parseArgs", () => {
     it("parses boolean flags", () => {
         assert.equal(parseArgs(["--workspaces"]).workspaces, true);
         assert.equal(parseArgs(["--no-amend"]).noAmend, true);
+        assert.equal(parseArgs(["--separate-commit"]).separateCommit, true);
+        assert.equal(parseArgs(["--no-skip-ci"]).skipOnCI, false);
         assert.equal(parseArgs(["--dry-run"]).dryRun, true);
         assert.equal(parseArgs(["--verbose"]).verbose, true);
         assert.equal(parseArgs(["-v"]).verbose, true);
@@ -278,6 +287,11 @@ describe("parseArgs", () => {
     it("parses --format with value", () => {
         assert.equal(parseArgs(["--format", "pre"]).format, "pre");
         assert.equal(parseArgs(["--format", "BUILD"]).format, "build");
+    });
+
+    it("parses --metadata with value", () => {
+        assert.equal(parseArgs(["--metadata", "timestamp"]).metadata, "timestamp");
+        assert.equal(parseArgs(["--metadata", "TIMESTAMP-SHA"]).metadata, "timestamp-sha");
     });
 
     it("parses --patch with integer", () => {
@@ -331,6 +345,21 @@ describe("parseArgs", () => {
         };
         try {
             assert.throws(() => parseArgs(["--format", "foo"]), /exit/);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
+    it("exits on invalid --metadata", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--metadata", "sha"]), /exit/u);
             assert.equal(exitCode, 2);
         } finally {
             process.exit = original;

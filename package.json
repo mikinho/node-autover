@@ -1,6 +1,6 @@
 {
     "name": "@mikinho/autover",
-    "version": "2.1.0",
+    "version": "2.1.0+290501.e5f4fd0",
     "description": "Strict SemVer build-metadata versioner for Node.js — deterministic timestamps, workspace-aware, safe post-commit amend with reentrancy lock",
     "bin": {
         "autover": "bin/autover.js"
@@ -34,7 +34,7 @@
         "developer-tools"
     ],
     "engines": {
-        "node": ">=18"
+        "node": ">=20.19.0"
     },
     "dependencies": {
         "fast-glob": "^3.3.3"
@@ -61,9 +61,9 @@
         "lint:fix": "eslint . --fix",
         "ver:preview": "npx autover --no-amend --dry-run --short",
         "ver:apply": "npx autover --guard-unchanged --short",
-        "test": "files=$(git diff --cached --name-only --diff-filter=ACMRTUXB | tr '\\n' ' '); [ -z \"$files\" ] && exit 0 || eslint --no-warn-ignored $files",
-        "test:unit": "node --test 'tests/**/*.test.js'",
-        "prepublishOnly": "npm test",
+        "test": "node --test 'tests/**/*.test.js'",
+        "test:unit": "npm test",
+        "prepublishOnly": "npm run format:check && npm run lint && npm test && npm run docs",
         "postversion": "git push && git push --tags"
     },
     "publishConfig": {
