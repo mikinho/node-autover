@@ -86,11 +86,9 @@ describe("parseMMP", () => {
         assert.deepEqual(parseMMP("5.1"), [5, 1, 0]);
     });
 
-    it("returns NaN for leading non-numeric input (parseInt behavior)", () => {
-        const [x, y, z] = parseMMP("not-a-version");
-        assert.ok(Number.isNaN(x));
-        assert.equal(y, 0);
-        assert.equal(z, 0);
+    it("rejects invalid semantic versions", () => {
+        assert.throws(() => parseMMP("not-a-version"), /invalid semantic version/u);
+        assert.throws(() => parseMMP("01.2.3"), /invalid semantic version/u);
     });
 
     it("handles autover pre-release format", () => {
@@ -177,10 +175,10 @@ describe("fromGitEpoch", () => {
 /* ------------------------------------------------------------------ */
 
 describe("makeVersionBuild", () => {
-    it("generates X.Y.Z+stamp.commitid format", () => {
+    it("generates timestamp-only build metadata by default", () => {
         const pkg = { version: "1.2.3" };
         const [ver] = makeVersionBuild(pkg, "abc1234", "1735689600", null);
-        assert.match(ver, /^1\.2\.3\+\d+\.abc1234$/);
+        assert.match(ver, /^1\.2\.3\+\d+$/u);
     });
 
     it("can omit the commit id from build metadata", () => {
@@ -192,7 +190,7 @@ describe("makeVersionBuild", () => {
 
     it("applies patch override", () => {
         const pkg = { version: "1.2.3" };
-        const [ver] = makeVersionBuild(pkg, "abc1234", "1735689600", 99);
+        const [ver] = makeVersionBuild(pkg, "abc1234", "1735689600", 99, "timestamp-sha");
         assert.match(ver, /^1\.2\.99\+\d+\.abc1234$/);
     });
 
@@ -272,6 +270,7 @@ describe("parseArgs", () => {
 
     it("parses boolean flags", () => {
         assert.equal(parseArgs(["--workspaces"]).workspaces, true);
+        assert.equal(parseArgs(["--recursive"]).recursive, true);
         assert.equal(parseArgs(["--no-amend"]).noAmend, true);
         assert.equal(parseArgs(["--separate-commit"]).separateCommit, true);
         assert.equal(parseArgs(["--no-skip-ci"]).skipOnCI, false);
@@ -315,6 +314,21 @@ describe("parseArgs", () => {
         };
         try {
             assert.throws(() => parseArgs(["--bogus"]), /exit/);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
+    it("rejects missing option values without consuming another flag", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--file", "--dry-run"]), /exit/u);
             assert.equal(exitCode, 2);
         } finally {
             process.exit = original;

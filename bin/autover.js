@@ -26,14 +26,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /**
  * Autover: strict SemVer versioner (build metadata by default) for Node projects.
  *
- * - Default: `X.Y.Z+<minutesSinceJan1UTC>.<gitsha>`
+ * - Default: `X.Y.Z+<minutesSinceJan1UTC>`
  * - Pre-release: `X.Y.<minutesSinceJan1UTC>-<gitsha>` (`--format pre`)
- * - Workspaces-aware (Yarn/NPM/PNPM), gated by staged changes when `--workspaces` is used.
+ * - Workspaces-aware (Yarn/NPM/PNPM), gated by triggering-commit changes.
  * - Safe amend (preserves author/message/dates) and reentrancy lock.
  *
  * @module autover
  * @main autover
- * @version 2.0.1
  * @since 2.0.0
  */
 
@@ -48,6 +47,7 @@ import fg from "fast-glob";
 const _require = createRequire(import.meta.url);
 /** @const {string} SCRIPT_VERSION */
 const SCRIPT_VERSION = _require("../package.json").version.split("+")[0];
+const jsonFormatting = new WeakMap();
 
 /** @const {string} LOCKFILE_DEFAULT */
 const LOCKFILE_DEFAULT = ".git/autover.lock";
@@ -56,13 +56,14 @@ const LOCKFILE_DEFAULT = ".git/autover.lock";
 const defaultOptions = {
     file: null,
     workspaces: false,
+    recursive: false,
     noAmend: false,
     dryRun: false,
     verbose: false,
     quiet: false,
     short: false,
     format: "build",
-    metadata: "timestamp-sha",
+    metadata: "timestamp",
     separateCommit: false,
     guardUnchanged: false,
     patch: null,
@@ -71,6 +72,9 @@ const defaultOptions = {
     version: false,
     help: false,
     lockPath: null,
+    rootAlso: false,
+    skipOnCI: false,
+    tagOnChange: false,
 };
 
 /**
@@ -137,16 +141,6 @@ function isGitRepo() {
  */
 function gitTopDir() {
     return runGit(["rev-parse", "--show-toplevel"]);
-}
-
-/**
- * Return the path to `.git` directory for the current repo.
- *
- * @method gitDir
- * @return {String|null}
- */
-function gitDir() {
-    return runGit(["rev-parse", "--git-dir"]);
 }
 
 /**
@@ -288,7 +282,14 @@ function fromGitEpoch(ts) {
  */
 async function readJSON(p) {
     const raw = await fsp.readFile(p, "utf8");
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    const indentMatch = raw.match(/\r?\n([ \t]+)"/u);
+    jsonFormatting.set(data, {
+        indent: indentMatch ? indentMatch[1] : 0,
+        newline: raw.includes("\r\n") ? "\r\n" : "\n",
+        finalNewline: /\r?\n$/u.test(raw),
+    });
+    return data;
 }
 
 /**
@@ -302,10 +303,27 @@ async function readJSON(p) {
  */
 async function atomicWriteJSON(p, data) {
     const dir = path.dirname(p);
+    const originalStat = await fsp.stat(p);
+    const formatting = jsonFormatting.get(data) || {
+        indent: "    ",
+        newline: "\n",
+        finalNewline: true,
+    };
+    let serialized = JSON.stringify(data, null, formatting.indent);
+    if (formatting.newline === "\r\n") {
+        serialized = serialized.replace(/\n/gu, "\r\n");
+    }
+    if (formatting.finalNewline) {
+        serialized += formatting.newline;
+    }
     await fsp.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, `.autover.tmp.${process.pid}.${Date.now()}`);
     try {
-        await fsp.writeFile(tmp, JSON.stringify(data, null, 4) + "\n", "utf8");
+        await fsp.writeFile(tmp, serialized, {
+            encoding: "utf8",
+            mode: originalStat.mode,
+        });
+        await fsp.chmod(tmp, originalStat.mode);
         await fsp.rename(tmp, p);
     } catch (e) {
         await fsp.unlink(tmp).catch(() => {});
@@ -322,6 +340,9 @@ async function atomicWriteJSON(p, data) {
  */
 function parseMMP(v) {
     const core = v.split("+", 1)[0].split("-", 1)[0];
+    if (!/^(0|[1-9]\d*)(\.(0|[1-9]\d*)){0,2}$/u.test(core)) {
+        throw new TypeError(`invalid semantic version "${v}"`);
+    }
     const parts = core
         .split(".")
         .slice(0, 3)
@@ -343,7 +364,7 @@ function parseMMP(v) {
  * @param {String} metadata Build metadata mode (`timestamp` or `timestamp-sha`).
  * @return {Array} [version:String, date:Date]
  */
-function makeVersionBuild(pkg, commitid, gitTs, patchOverride, metadata = "timestamp-sha") {
+function makeVersionBuild(pkg, commitid, gitTs, patchOverride, metadata = "timestamp") {
     const d = fromGitEpoch(gitTs);
     let [x, y, z] = parseMMP(String(pkg.version ?? "1.0.0"));
     if (Number.isInteger(patchOverride)) {
@@ -391,6 +412,13 @@ function safeToAmend(repoRoot) {
         return false;
     }
     if (
+        fs.existsSync(path.join(gdir, "CHERRY_PICK_HEAD")) ||
+        fs.existsSync(path.join(gdir, "REVERT_HEAD")) ||
+        fs.existsSync(path.join(gdir, "sequencer"))
+    ) {
+        return false;
+    }
+    if (
         fs.existsSync(path.join(gdir, "rebase-merge")) ||
         fs.existsSync(path.join(gdir, "rebase-apply"))
     ) {
@@ -417,8 +445,15 @@ function isAutoverCommit() {
  * @param {String|null} custom Custom lock path or null.
  * @return {String}
  */
-function lockPath(custom) {
-    return custom || LOCKFILE_DEFAULT;
+function lockPath(custom, repoRoot) {
+    if (!custom || custom === LOCKFILE_DEFAULT) {
+        const gitPath = runGit(["rev-parse", "--git-path", "autover.lock"], { cwd: repoRoot });
+        if (!gitPath) {
+            throw new Error("unable to resolve Git lock path");
+        }
+        return path.resolve(repoRoot, gitPath);
+    }
+    return path.resolve(repoRoot, custom);
 }
 
 /**
@@ -458,16 +493,25 @@ async function removeLock(p) {
     }
 }
 
-/**
- * Build a Set of absolute paths for all currently staged files.
- *
- * @method stagedAbsSet
- * @param {String} repoRoot Repo root.
- * @return {Set<String>} Absolute staged file paths.
- */
-function stagedAbsSet(repoRoot) {
-    const rels = stagedRelPaths(repoRoot);
-    return new Set(rels.map((r) => path.resolve(repoRoot, r)));
+/** Return true when the index contains any staged path. */
+function indexIsDirty(repoRoot) {
+    return stagedRelPaths(repoRoot).length > 0;
+}
+
+/** Return true when a generated target has staged, unstaged, or untracked changes. */
+function pathIsDirty(repoRoot, target) {
+    const rel = path.relative(repoRoot, target);
+    const result = spawnSync("git", ["status", "--porcelain=v1", "--", rel], {
+        cwd: repoRoot,
+        encoding: "utf8",
+    });
+    return result.status !== 0 || Boolean((result.stdout || "").trim());
+}
+
+/** Return true when HEAD carries a valid or partially trusted Git signature. */
+function headIsSigned(repoRoot) {
+    const status = runGit(["show", "-s", "--format=%G?", "HEAD"], { cwd: repoRoot });
+    return Boolean(status && status !== "N");
 }
 
 /**
@@ -597,11 +641,49 @@ async function loadConfig(repoRoot) {
     if (!fs.existsSync(p)) {
         return {};
     }
-    try {
-        return JSON.parse(await fsp.readFile(p, "utf8"));
-    } catch (e) {
-        console.warn(`autover: .autoverrc.json unreadable: ${e}`);
-        return {};
+    const parsed = JSON.parse(await fsp.readFile(p, "utf8"));
+    validateConfig(parsed);
+    return parsed;
+}
+
+/**
+ * Validate the complete configuration schema.
+ *
+ * @method validateConfig
+ * @param {Object} config Parsed configuration.
+ * @return {void}
+ */
+function validateConfig(config) {
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+        throw new TypeError("configuration must be a JSON object");
+    }
+    const types = {
+        file: ["string", "null"],
+        workspaces: ["boolean"],
+        recursive: ["boolean"],
+        noAmend: ["boolean"],
+        separateCommit: ["boolean"],
+        dryRun: ["boolean"],
+        verbose: ["boolean"],
+        quiet: ["boolean"],
+        short: ["boolean"],
+        format: ["string"],
+        metadata: ["string"],
+        guardUnchanged: ["boolean"],
+        patch: ["number", "null"],
+        lockPath: ["string", "null"],
+        rootAlso: ["boolean"],
+        skipOnCI: ["boolean"],
+        tagOnChange: ["boolean"],
+    };
+    for (const [key, value] of Object.entries(config)) {
+        if (!(key in types)) {
+            throw new TypeError(`unknown configuration key "${key}"`);
+        }
+        const actual = value === null ? "null" : typeof value;
+        if (!types[key].includes(actual)) {
+            throw new TypeError(`configuration key "${key}" must be ${types[key].join(" or ")}`);
+        }
     }
 }
 
@@ -621,9 +703,10 @@ async function doInit(repoRoot) {
     }
     const body = {
         format: "build",
-        metadata: "timestamp-sha",
+        metadata: "timestamp",
         separateCommit: false,
         workspaces: true,
+        recursive: false,
         guardUnchanged: true,
         skipOnCI: true,
         short: true,
@@ -639,7 +722,7 @@ async function doInit(repoRoot) {
 }
 
 /**
- * Install POSIX and Windows post-commit hooks that invoke `npx autover`.
+ * Install managed POSIX and Windows post-commit hook blocks.
  *
  * @method doInstall
  * @async
@@ -648,40 +731,55 @@ async function doInit(repoRoot) {
  */
 async function doInstall(repoRoot) {
     const customHooksPath = runGit(["config", "--get", "core.hooksPath"]);
-    const gdir = gitDir() || path.join(repoRoot, ".git");
+    const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
     const hooksDir = customHooksPath
         ? path.resolve(repoRoot, customHooksPath)
-        : path.join(gdir, "hooks");
+        : path.resolve(repoRoot, gitHooksPath || path.join(".git", "hooks"));
     await fsp.mkdir(hooksDir, { recursive: true });
     const posixHookPath = path.join(hooksDir, "post-commit");
     const windowsHookPath = path.join(hooksDir, "post-commit.cmd");
-    const posixHook = `#!/usr/bin/env bash
-# post-commit: run autover across workspaces with guard and concise output
+    const posixBlock = `# >>> autover managed block >>>
 if command -v npx >/dev/null 2>&1; then
-    npx autover
+    npx --no-install autover
 else
     echo "⚠️ npx not found. Install Node.js/npm to use autover."
 fi
-`;
-    const windowsHook = `@echo off
-REM post-commit: run autover across workspaces with guard and concise output
+# <<< autover managed block <<<`;
+    const windowsBlock = `REM >>> autover managed block >>>
 where npx >nul 2>nul
 IF ERRORLEVEL 1 (
     echo npx not found. Install Node.js/npm to use autover.
     EXIT /B 0
 )
-npx autover
-`;
-    for (const hp of [posixHookPath, windowsHookPath]) {
-        if (fs.existsSync(hp)) {
-            console.warn(`autover: overwriting existing hook: ${hp}`);
-        }
-    }
-    await fsp.writeFile(posixHookPath, posixHook, "utf8");
+npx --no-install autover
+REM <<< autover managed block <<<`;
+    const updateHook = async (hookPath, header, block, start, end) => {
+        const existing = fs.existsSync(hookPath) ? await fsp.readFile(hookPath, "utf8") : header;
+        const pattern = new RegExp(`${start}[\\s\\S]*?${end}`, "u");
+        const next = pattern.test(existing)
+            ? existing.replace(pattern, block)
+            : `${existing.trimEnd()}\n\n${block}\n`;
+        await fsp.writeFile(hookPath, next, "utf8");
+    };
+    await updateHook(
+        posixHookPath,
+        "#!/usr/bin/env bash\n",
+        posixBlock,
+        "# >>> autover managed block >>>",
+        "# <<< autover managed block <<<",
+    );
     await fsp.chmod(posixHookPath, 0o755);
-    await fsp.writeFile(windowsHookPath, windowsHook, "utf8");
+    await updateHook(
+        windowsHookPath,
+        "@echo off\r\n",
+        windowsBlock,
+        "REM >>> autover managed block >>>",
+        "REM <<< autover managed block <<<",
+    );
     console.log(`autover: installed hooks:\n  ${posixHookPath}\n  ${windowsHookPath}`);
-    console.log("autover: hooks run bare `npx autover`; use .autoverrc.json for custom settings.");
+    console.log(
+        "autover: hooks use the locally installed package; use .autoverrc.json for settings.",
+    );
 }
 
 /**
@@ -704,9 +802,7 @@ async function stageAndAmend(filesToAdd, { verbose }) {
     for (const f of filesToAdd) {
         const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
         if (res.status !== 0) {
-            console.error(`autover: git add failed for ${f}`);
-            process.exitCode = 1;
-            return;
+            throw new Error(`git add failed for ${f}`);
         }
     }
     const env = { ...process.env };
@@ -716,13 +812,16 @@ async function stageAndAmend(filesToAdd, { verbose }) {
         env.GIT_COMMITTER_DATE = cISO;
     }
     const args = ["commit", "--amend", "--no-edit", "--no-verify"];
+    const repoRoot = gitTopDir();
+    if (repoRoot && headIsSigned(repoRoot)) {
+        args.push("-S");
+    }
     if (aISO) {
         args.push(`--date=${aISO}`);
     }
     const res = spawnSync("git", args, { encoding: "utf8", env });
     if (res.status !== 0) {
-        console.error("autover: git commit --amend failed.");
-        process.exitCode = 1;
+        throw new Error("git commit --amend failed");
     }
 }
 
@@ -742,9 +841,7 @@ async function stageAndCommit(filesToAdd, { verbose }) {
     for (const f of filesToAdd) {
         const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
         if (res.status !== 0) {
-            console.error(`autover: git add failed for ${f}`);
-            process.exitCode = 1;
-            return;
+            throw new Error(`git add failed for ${f}`);
         }
     }
     const res = spawnSync(
@@ -760,8 +857,7 @@ async function stageAndCommit(filesToAdd, { verbose }) {
         { encoding: "utf8" },
     );
     if (res.status !== 0) {
-        console.error("autover: version commit failed.");
-        process.exitCode = 1;
+        throw new Error("version commit failed");
     } else if (verbose) {
         console.log("autover: created a separate version commit.");
     }
@@ -833,14 +929,28 @@ async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
  * @param {Boolean} verbose Verbose logging.
  * @return {void}
  */
+function assertTagAvailable(version) {
+    const core = version.split("+", 1)[0].split("-", 1)[0];
+    const tag = `v${core}`;
+    const existing = runGit(["rev-parse", "-q", "--verify", `refs/tags/${tag}^{}`]);
+    if (existing) {
+        throw new Error(`tag ${tag} already exists`);
+    }
+    return true;
+}
+
 function maybeTag(tagOnChange, version, changed, verbose) {
     if (!tagOnChange || !changed) {
         return;
     }
+    assertTagAvailable(version);
     const core = version.split("+", 1)[0].split("-", 1)[0];
     const tag = `v${core}`;
     const res = spawnSync("git", ["tag", tag], { encoding: "utf8" });
-    if (res.status === 0 && verbose) {
+    if (res.status !== 0) {
+        throw new Error(`failed to create tag ${tag}`);
+    }
+    if (verbose) {
         console.log(`autover: tagged ${tag}`);
     }
 }
@@ -856,6 +966,15 @@ function parseArgs(argv) {
     const out = {};
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
+        const takeValue = () => {
+            const value = argv[i + 1];
+            if (value == null || value.startsWith("-")) {
+                console.error(`autover: ${a} requires a value`);
+                process.exit(2);
+            }
+            i += 1;
+            return value;
+        };
         if (a === "-h" || a === "--help") {
             out.help = true;
         } else if (a === "-V" || a === "--version") {
@@ -864,10 +983,12 @@ function parseArgs(argv) {
             out.init = true;
         } else if (a === "--install") {
             out.install = true;
-        } else if ((a === "-f" || a === "--file") && i + 1 < argv.length) {
-            out.file = argv[++i];
+        } else if (a === "-f" || a === "--file") {
+            out.file = takeValue();
         } else if (a === "--workspaces") {
             out.workspaces = true;
+        } else if (a === "--recursive") {
+            out.recursive = true;
         } else if (a === "--no-amend") {
             out.noAmend = true;
         } else if (a === "--separate-commit") {
@@ -882,15 +1003,15 @@ function parseArgs(argv) {
             out.quiet = true;
         } else if (a === "--short") {
             out.short = true;
-        } else if (a === "--format" && i + 1 < argv.length) {
-            const fmt = argv[++i].toLowerCase();
+        } else if (a === "--format") {
+            const fmt = takeValue().toLowerCase();
             if (fmt !== "build" && fmt !== "pre") {
                 console.error(`autover: --format must be "build" or "pre", got "${fmt}"`);
                 process.exit(2);
             }
             out.format = fmt;
-        } else if (a === "--metadata" && i + 1 < argv.length) {
-            const metadata = argv[++i].toLowerCase();
+        } else if (a === "--metadata") {
+            const metadata = takeValue().toLowerCase();
             if (metadata !== "timestamp" && metadata !== "timestamp-sha") {
                 console.error(
                     `autover: --metadata must be "timestamp" or "timestamp-sha", got "${metadata}"`,
@@ -900,8 +1021,8 @@ function parseArgs(argv) {
             out.metadata = metadata;
         } else if (a === "--guard-unchanged") {
             out.guardUnchanged = true;
-        } else if (a === "--patch" && i + 1 < argv.length) {
-            const n = Number(argv[++i]);
+        } else if (a === "--patch") {
+            const n = Number(takeValue());
             if (!Number.isInteger(n) || n < 0) {
                 console.error("autover: --patch requires a non-negative integer");
                 process.exit(2);
@@ -927,7 +1048,7 @@ function printHelp() {
             "autover: strict SemVer versioner (npx).",
             "",
             "Usage:",
-            "  npx autover [--file PATH | --workspaces]",
+            "  npx autover [--file PATH | --workspaces [--recursive]]",
             "               [--format build|pre] [--patch N]",
             "               [--metadata timestamp|timestamp-sha]",
             "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]",
@@ -983,6 +1104,9 @@ async function main() {
         console.log(`autover ${SCRIPT_VERSION}`);
         return;
     }
+    if (/^(1|true)$/iu.test(process.env.AUTOVER_SKIP || "")) {
+        return;
+    }
 
     const gv = gitVersion();
     const [g1, g2, g3] = versionTuple(gv);
@@ -1012,24 +1136,19 @@ async function main() {
     }
 
     // Command Line Arguments > Config File Arguments > Default Option
-    const configOptions = await loadConfig(repoRoot);
-
-    const knownConfigKeys = new Set([
-        ...Object.keys(defaultOptions),
-        "rootAlso",
-        "skipOnCI",
-        "tagOnChange",
-    ]);
-    for (const key of Object.keys(configOptions)) {
-        if (!knownConfigKeys.has(key)) {
-            console.warn(`autover: unknown config key "${key}" in .autoverrc.json`);
-        }
+    let configOptions;
+    try {
+        configOptions = await loadConfig(repoRoot);
+    } catch (error) {
+        console.error(`autover: invalid .autoverrc.json: ${error.message}`);
+        process.exitCode = 2;
+        return;
     }
 
     const cfg = { ...defaultOptions, ...configOptions, ...args };
 
     // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
-    const lk = cfg.dryRun ? null : path.resolve(repoRoot, lockPath(cfg.lockPath));
+    const lk = cfg.dryRun ? null : lockPath(cfg.lockPath, repoRoot);
     if (lk && !acquireLock(lk)) {
         if (!cfg.quiet && (cfg.short || cfg.verbose)) {
             console.log("autover: lock present; exiting.");
@@ -1053,14 +1172,9 @@ async function main() {
             process.exitCode = 2;
             return;
         }
-        cfg.workspaces = Boolean(cfg.workspaces);
-        cfg.guardUnchanged = Boolean(cfg.guardUnchanged);
-        cfg.quiet = Boolean(cfg.quiet);
-        cfg.separateCommit = Boolean(cfg.separateCommit);
-
-        const rootAlso = Boolean(cfg.rootAlso);
-        const skipOnCI = Boolean(cfg.skipOnCI);
-        const tagOnChange = Boolean(cfg.tagOnChange);
+        const rootAlso = cfg.rootAlso;
+        const skipOnCI = cfg.skipOnCI;
+        const tagOnChange = cfg.tagOnChange;
 
         if (cfg.patch != null) {
             const n = Number(cfg.patch);
@@ -1076,6 +1190,11 @@ async function main() {
             process.exitCode = 2;
             return;
         }
+        if (cfg.recursive && !cfg.workspaces) {
+            console.error("autover: --recursive requires --workspaces");
+            process.exitCode = 2;
+            return;
+        }
         if (cfg.noAmend && cfg.separateCommit) {
             console.error("autover: --no-amend and --separate-commit are mutually exclusive");
             process.exitCode = 2;
@@ -1086,8 +1205,16 @@ async function main() {
             process.exitCode = 2;
             return;
         }
-        if (cfg.format === "pre" && cfg.metadata !== "timestamp-sha") {
-            console.error("autover: --metadata is only supported with --format build");
+        const shaBearing = cfg.format === "pre" || cfg.metadata === "timestamp-sha";
+        if (shaBearing && !cfg.dryRun && !cfg.noAmend && !cfg.separateCommit) {
+            console.error(
+                "autover: SHA-bearing versions require --separate-commit or --no-amend; amend mode cannot preserve the embedded SHA",
+            );
+            process.exitCode = 2;
+            return;
+        }
+        if (tagOnChange && cfg.noAmend && !cfg.dryRun) {
+            console.error("autover: tagOnChange cannot be used with --no-amend");
             process.exitCode = 2;
             return;
         }
@@ -1107,8 +1234,13 @@ async function main() {
         // All repository-state checks happen before any generated file is written.
         if (!cfg.noAmend && !cfg.dryRun && !safeToAmend(repoRoot)) {
             console.error(
-                "autover: unsafe state (detached HEAD / merge / rebase); no files changed.",
+                "autover: unsafe Git state (detached HEAD or operation in progress); no files changed.",
             );
+            process.exitCode = 1;
+            return;
+        }
+        if (!cfg.noAmend && !cfg.dryRun && indexIsDirty(repoRoot)) {
+            console.error("autover: index contains staged changes; no files changed.");
             process.exitCode = 1;
             return;
         }
@@ -1118,7 +1250,9 @@ async function main() {
         if (cfg.workspaces) {
             const ws = await detectWorkspaceFiles(repoRoot);
             if (ws === null) {
-                targets = Array.from(recursivePackageJsons(repoRoot));
+                targets = cfg.recursive
+                    ? Array.from(recursivePackageJsons(repoRoot))
+                    : [path.join(repoRoot, "package.json")];
             } else {
                 targets = Array.from(ws);
                 if (rootAlso || targets.length === 0) {
@@ -1131,18 +1265,27 @@ async function main() {
         } else {
             targets = [cfg.file ? path.resolve(cfg.file) : path.join(repoRoot, "package.json")];
         }
+        if (cfg.file && !fs.existsSync(targets[0])) {
+            console.error(`autover: package manifest not found: ${targets[0]}`);
+            process.exitCode = 2;
+            return;
+        }
         targets = Array.from(new Set(targets.filter((p) => fs.existsSync(p))));
 
-        // staged gating for workspaces
-        const staged = stagedAbsSet(repoRoot);
+        // Triggering-commit gating for workspaces.
         if (cfg.workspaces) {
             const committed = committedAbsSet(repoRoot);
             const committedArr = Array.from(committed);
             targets = targets.filter((pj) => subtreeHasStaged(pj, committedArr));
         }
 
-        const commitid = shortCommitId() || "unknown";
+        const commitid = shortCommitId();
         const gitTs = authorTS();
+        if (!commitid || !gitTs) {
+            console.error("autover: unable to resolve HEAD identity and author timestamp");
+            process.exitCode = 1;
+            return;
+        }
 
         const changedFiles = [];
         const plans = [];
@@ -1154,16 +1297,23 @@ async function main() {
             try {
                 pkg = await readJSON(pj);
             } catch (e) {
-                if (cfg.verbose) {
-                    console.error(`autover: skip unreadable ${pj}: ${e}`);
-                }
-                continue;
+                console.error(`autover: invalid package manifest ${pj}: ${e.message}`);
+                process.exitCode = 2;
+                return;
             }
 
-            const [newVer, dt] =
-                cfg.format === "pre"
-                    ? makeVersionPre(pkg, commitid, gitTs)
-                    : makeVersionBuild(pkg, commitid, gitTs, cfg.patch, cfg.metadata);
+            let newVer;
+            let dt;
+            try {
+                [newVer, dt] =
+                    cfg.format === "pre"
+                        ? makeVersionPre(pkg, commitid, gitTs)
+                        : makeVersionBuild(pkg, commitid, gitTs, cfg.patch, cfg.metadata);
+            } catch (error) {
+                console.error(`autover: ${pj}: ${error.message}`);
+                process.exitCode = 2;
+                return;
+            }
 
             lastDate = dt;
             const oldVer = String(pkg.version ?? "");
@@ -1176,13 +1326,6 @@ async function main() {
             if (oldVer === newVer) {
                 continue;
             }
-            if (staged.has(pj)) {
-                if (cfg.verbose) {
-                    console.log(`autover: ${pj} already staged; skipping write.`);
-                }
-                continue;
-            }
-
             pkg.version = newVer;
             plans.push({ packageJsonPath: pj, pkg, version: newVer });
             if (!firstChangedVersion) {
@@ -1190,26 +1333,98 @@ async function main() {
             }
         }
 
-        // Validate every matching lockfile before any package or lockfile is written.
-        for (const plan of plans) {
-            await syncLockfileVersion(repoRoot, plan.packageJsonPath, plan.version, true);
+        const lockfilePlans = new Map();
+        try {
+            for (const plan of plans) {
+                if (!cfg.dryRun && pathIsDirty(repoRoot, plan.packageJsonPath)) {
+                    console.error(
+                        `autover: generated target has uncommitted changes: ${plan.packageJsonPath}`,
+                    );
+                    process.exitCode = 1;
+                    return;
+                }
+                const lockfile = await syncLockfileVersion(
+                    repoRoot,
+                    plan.packageJsonPath,
+                    plan.version,
+                    true,
+                );
+                if (lockfile) {
+                    if (!cfg.dryRun && pathIsDirty(repoRoot, lockfile)) {
+                        console.error(
+                            `autover: generated target has uncommitted changes: ${lockfile}`,
+                        );
+                        process.exitCode = 1;
+                        return;
+                    }
+                    lockfilePlans.set(lockfile, true);
+                }
+            }
+        } catch (error) {
+            console.error(`autover: invalid npm lockfile: ${error.message}`);
+            process.exitCode = 2;
+            return;
+        }
+        if (!cfg.dryRun && tagOnChange && firstChangedVersion) {
+            try {
+                assertTagAvailable(firstChangedVersion);
+            } catch (error) {
+                console.error(`autover: ${error.message}; no files changed.`);
+                process.exitCode = 1;
+                return;
+            }
         }
 
-        // Apply only after every target and lockfile has been read successfully.
-        for (const plan of plans) {
-            if (!cfg.dryRun) {
-                await atomicWriteJSON(plan.packageJsonPath, plan.pkg);
+        const snapshotPaths = Array.from(
+            new Set([...plans.map((plan) => plan.packageJsonPath), ...lockfilePlans.keys()]),
+        );
+        const snapshots = new Map();
+        for (const target of snapshotPaths) {
+            const stat = await fsp.stat(target);
+            snapshots.set(target, { content: await fsp.readFile(target), mode: stat.mode });
+        }
+
+        try {
+            // Apply only after every target and lockfile has been read successfully.
+            for (const plan of plans) {
+                if (!cfg.dryRun) {
+                    await atomicWriteJSON(plan.packageJsonPath, plan.pkg);
+                }
+                changedFiles.push(plan.packageJsonPath);
+                const lockfile = await syncLockfileVersion(
+                    repoRoot,
+                    plan.packageJsonPath,
+                    plan.version,
+                    cfg.dryRun,
+                );
+                if (lockfile && !changedFiles.includes(lockfile)) {
+                    changedFiles.push(lockfile);
+                }
             }
-            changedFiles.push(plan.packageJsonPath);
-            const lockfile = await syncLockfileVersion(
-                repoRoot,
-                plan.packageJsonPath,
-                plan.version,
-                cfg.dryRun,
-            );
-            if (lockfile && !changedFiles.includes(lockfile)) {
-                changedFiles.push(lockfile);
+
+            if (!cfg.noAmend && !cfg.dryRun) {
+                if (cfg.separateCommit) {
+                    await stageAndCommit(changedFiles, { verbose: cfg.verbose });
+                } else {
+                    await stageAndAmend(changedFiles, { verbose: cfg.verbose });
+                }
+            } else if (cfg.verbose) {
+                console.log("autover: --no-amend or --dry-run; skipping amend.");
             }
+        } catch (error) {
+            for (const [target, snapshot] of snapshots) {
+                await fsp.writeFile(target, snapshot.content);
+                await fsp.chmod(target, snapshot.mode);
+            }
+            if (changedFiles.length) {
+                spawnSync("git", ["reset", "-q", "HEAD", "--", ...changedFiles], {
+                    cwd: repoRoot,
+                    encoding: "utf8",
+                });
+            }
+            console.error(`autover: ${error.message}; generated files restored.`);
+            process.exitCode = 1;
+            return;
         }
 
         if (cfg.guardUnchanged && changedFiles.length === 0) {
@@ -1227,24 +1442,14 @@ async function main() {
             return;
         }
 
-        if (!cfg.noAmend && !cfg.dryRun) {
-            if (cfg.separateCommit) {
-                await stageAndCommit(changedFiles, { verbose: cfg.verbose });
-                if (process.exitCode) {
-                    return;
-                }
-            } else {
-                await stageAndAmend(changedFiles, { verbose: cfg.verbose });
-                if (process.exitCode) {
-                    return;
-                }
-            }
-        } else if (cfg.verbose) {
-            console.log("autover: --no-amend or --dry-run; skipping amend.");
-        }
-
         if (firstChangedVersion && !cfg.dryRun) {
-            maybeTag(tagOnChange, firstChangedVersion, changedFiles.length > 0, cfg.verbose);
+            try {
+                maybeTag(tagOnChange, firstChangedVersion, changedFiles.length > 0, cfg.verbose);
+            } catch (error) {
+                console.error(`autover: ${error.message}`);
+                process.exitCode = 1;
+                return;
+            }
         }
 
         if (!cfg.quiet && cfg.short) {

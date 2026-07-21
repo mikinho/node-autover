@@ -12,7 +12,7 @@ clean:
 
 release: check
 	@if [ -z "$(VERSION)" ]; then echo "VERSION required"; exit 2; fi
-	npm version $(VERSION)
+	AUTOVER_SKIP=1 npm version $(VERSION)
 	npm publish --access public
 	git push && git push --tags
 
