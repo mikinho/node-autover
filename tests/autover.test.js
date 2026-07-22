@@ -14,6 +14,7 @@ import {
     isoZ,
     fromGitEpoch,
     shortCommitId,
+    expandWorkspaceGlobs,
 } from "../bin/autover.js";
 
 /* ------------------------------------------------------------------ */
@@ -408,5 +409,161 @@ describe("parseArgs", () => {
         } finally {
             process.exit = original;
         }
+    });
+});
+
+/* ------------------------------------------------------------------ */
+/* expandWorkspaceGlobs                                                */
+/* ------------------------------------------------------------------ */
+
+describe("expandWorkspaceGlobs", () => {
+    const makeTree = (t, files) => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "autover-glob-"));
+        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+        for (const rel of files) {
+            const abs = path.join(root, ...rel.split("/"));
+            fs.mkdirSync(path.dirname(abs), { recursive: true });
+            fs.writeFileSync(abs, "{}\n", "utf8");
+        }
+        return root;
+    };
+
+    const rel = (root, matches) => matches.map((m) => path.relative(root, m).replace(/\\/gu, "/"));
+
+    it("expands * against direct children only", (t) => {
+        const root = makeTree(t, [
+            "packages/a/package.json",
+            "packages/b/package.json",
+            "packages/b/nested/package.json",
+            "other/c/package.json",
+        ]);
+        const out = expandWorkspaceGlobs(["packages/*/package.json"], root);
+        assert.deepEqual(rel(root, out), ["packages/a/package.json", "packages/b/package.json"]);
+    });
+
+    it("matches literal paths without wildcards", (t) => {
+        const root = makeTree(t, ["apps/web/package.json"]);
+        const out = expandWorkspaceGlobs(["apps/web/package.json"], root);
+        assert.deepEqual(rel(root, out), ["apps/web/package.json"]);
+    });
+
+    it("returns an empty array when nothing matches", (t) => {
+        const root = makeTree(t, ["packages/a/package.json"]);
+        assert.deepEqual(expandWorkspaceGlobs(["missing/*/package.json"], root), []);
+    });
+
+    it("expands ** across zero or more directories", (t) => {
+        const root = makeTree(t, [
+            "package.json",
+            "packages/a/package.json",
+            "packages/deep/nested/b/package.json",
+        ]);
+        const out = expandWorkspaceGlobs(["**/package.json"], root);
+        assert.deepEqual(rel(root, out), [
+            "package.json",
+            "packages/a/package.json",
+            "packages/deep/nested/b/package.json",
+        ]);
+    });
+
+    it("never descends into node_modules or .git via **", (t) => {
+        const root = makeTree(t, [
+            "packages/a/package.json",
+            "packages/a/node_modules/dep/package.json",
+            "node_modules/x/package.json",
+        ]);
+        fs.mkdirSync(path.join(root, ".git", "hooks"), { recursive: true });
+        fs.writeFileSync(path.join(root, ".git", "hooks", "package.json"), "{}\n", "utf8");
+        const out = expandWorkspaceGlobs(["**/package.json"], root);
+        assert.deepEqual(rel(root, out), ["packages/a/package.json"]);
+    });
+
+    it("does not match dot-directories with wildcards", (t) => {
+        const root = makeTree(t, [".hidden/package.json", "visible/package.json"]);
+        const out = expandWorkspaceGlobs(["*/package.json"], root);
+        assert.deepEqual(rel(root, out), ["visible/package.json"]);
+    });
+
+    it("matches dot-directories when named literally", (t) => {
+        const root = makeTree(t, [".tools/package.json"]);
+        const out = expandWorkspaceGlobs([".tools/package.json"], root);
+        assert.deepEqual(rel(root, out), [".tools/package.json"]);
+    });
+
+    it("supports ? for exactly one character", (t) => {
+        const root = makeTree(t, ["pkg1/package.json", "pkg22/package.json"]);
+        const out = expandWorkspaceGlobs(["pkg?/package.json"], root);
+        assert.deepEqual(rel(root, out), ["pkg1/package.json"]);
+    });
+
+    it("excludes matches via leading-! negation", (t) => {
+        const root = makeTree(t, [
+            "packages/a/package.json",
+            "packages/b/package.json",
+            "packages/legacy/package.json",
+        ]);
+        const out = expandWorkspaceGlobs(
+            ["packages/*/package.json", "!packages/legacy/package.json"],
+            root,
+        );
+        assert.deepEqual(rel(root, out), ["packages/a/package.json", "packages/b/package.json"]);
+    });
+
+    it("treats regex metacharacters in names literally", (t) => {
+        const root = makeTree(t, ["pkg.one/package.json", "pkgXone/package.json"]);
+        const out = expandWorkspaceGlobs(["pkg.one/package.json"], root);
+        assert.deepEqual(rel(root, out), ["pkg.one/package.json"]);
+    });
+
+    it("normalizes ./ prefixes and deduplicates overlapping patterns", (t) => {
+        const root = makeTree(t, ["packages/a/package.json"]);
+        const out = expandWorkspaceGlobs(
+            ["./packages/a/package.json", "packages/*/package.json"],
+            root,
+        );
+        assert.deepEqual(rel(root, out), ["packages/a/package.json"]);
+    });
+
+    it("only matches regular files", (t) => {
+        const root = makeTree(t, ["packages/a/package.json"]);
+        fs.mkdirSync(path.join(root, "packages", "b", "package.json"), { recursive: true });
+        const out = expandWorkspaceGlobs(["packages/*/package.json"], root);
+        assert.deepEqual(rel(root, out), ["packages/a/package.json"]);
+    });
+
+    it("rejects unsupported glob syntax", () => {
+        for (const pattern of [
+            "packages/{a,b}/package.json",
+            "packages/[ab]/package.json",
+            "packages/+(a|b)/package.json",
+            "packages\\a/package.json",
+        ]) {
+            assert.throws(() => expandWorkspaceGlobs([pattern], os.tmpdir()), {
+                name: "TypeError",
+                message: /unsupported workspace pattern/u,
+            });
+        }
+    });
+
+    it("rejects patterns that escape the repository root", () => {
+        assert.throws(
+            () => expandWorkspaceGlobs(["../outside/package.json"], os.tmpdir()),
+            /must not escape/u,
+        );
+    });
+
+    it("rejects absolute, empty, and non-string patterns", () => {
+        assert.throws(() => expandWorkspaceGlobs(["/abs/package.json"], os.tmpdir()), /relative/u);
+        assert.throws(() => expandWorkspaceGlobs(["."], os.tmpdir()), /empty workspace pattern/u);
+        assert.throws(() => expandWorkspaceGlobs([42], os.tmpdir()), /must be a string/u);
+    });
+
+    it("returns sorted results regardless of pattern order", (t) => {
+        const root = makeTree(t, ["b/package.json", "a/package.json", "c/package.json"]);
+        const out = expandWorkspaceGlobs(
+            ["c/package.json", "a/package.json", "b/package.json"],
+            root,
+        );
+        assert.deepEqual(rel(root, out), ["a/package.json", "b/package.json", "c/package.json"]);
     });
 });

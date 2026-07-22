@@ -42,7 +42,6 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import fg from "fast-glob";
 
 const _require = createRequire(import.meta.url);
 /** @const {string} SCRIPT_VERSION */
@@ -51,6 +50,9 @@ const jsonFormatting = new WeakMap();
 
 /** @const {string} LOCKFILE_DEFAULT */
 const LOCKFILE_DEFAULT = ".git/autover.lock";
+
+/** @const {Set<String>} SKIP_DIRS Directories never traversed during package discovery. */
+const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 /** @const {Object} defaultOptions */
 const defaultOptions = {
@@ -526,6 +528,194 @@ function committedAbsSet(repoRoot) {
 }
 
 /**
+ * Check whether a workspace pattern uses glob syntax the expander does not support.
+ * Braces, character classes, extglobs, and backslash escapes are rejected loudly
+ * instead of silently diverging from npm's matching.
+ *
+ * @method usesUnsupportedGlobSyntax
+ * @param {String} pattern Workspace glob pattern (leading `!` removed).
+ * @return {Boolean}
+ */
+function usesUnsupportedGlobSyntax(pattern) {
+    return /[{}[\]\\]|[@+!?*]\(/u.test(pattern);
+}
+
+/**
+ * Convert one glob segment (no `/`) into an anchored RegExp.
+ * `*` matches any run of characters and `?` matches exactly one;
+ * every other character is literal.
+ *
+ * @method globSegmentToRegExp
+ * @param {String} segment Pattern segment.
+ * @return {RegExp}
+ */
+function globSegmentToRegExp(segment) {
+    const escaped = segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    return new RegExp(`^${escaped.replace(/\\\*/gu, ".*").replace(/\\\?/gu, ".")}$`, "u");
+}
+
+/**
+ * List directory entries, or an empty array when the path is missing,
+ * unreadable, or not a directory.
+ *
+ * @method readDirEntries
+ * @param {String} dir Directory path.
+ * @return {Array<fs.Dirent>}
+ */
+function readDirEntries(dir) {
+    try {
+        return fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Split a workspace glob pattern into normalized path segments.
+ *
+ * @method parseGlobPattern
+ * @param {String} pattern Workspace glob pattern (leading `!` removed).
+ * @return {Array<String>} Non-empty pattern segments.
+ */
+function parseGlobPattern(pattern) {
+    if (typeof pattern !== "string") {
+        throw new TypeError(`workspace pattern must be a string, got ${typeof pattern}`);
+    }
+    if (usesUnsupportedGlobSyntax(pattern)) {
+        throw new TypeError(
+            `unsupported workspace pattern "${pattern}" (braces, character classes, extglobs, and escapes are not supported)`,
+        );
+    }
+    if (pattern.startsWith("/")) {
+        throw new TypeError(`workspace pattern "${pattern}" must be relative`);
+    }
+    const segments = pattern.split("/").filter((s) => s !== "" && s !== ".");
+    if (!segments.length) {
+        throw new TypeError(`empty workspace pattern "${pattern}"`);
+    }
+    if (segments.includes("..")) {
+        throw new TypeError(`workspace pattern "${pattern}" must not escape the repository root`);
+    }
+    // `**/**` is equivalent to `**`; collapsing avoids redundant walks.
+    return segments.filter((s, i) => s !== "**" || segments[i - 1] !== "**");
+}
+
+/**
+ * Expand pattern segments from a directory, yielding candidate paths.
+ * Wildcard segments never match dot-entries unless the segment itself starts
+ * with a literal dot; `**` matches zero or more directories and never descends
+ * into `node_modules`, `.git`, dot-directories, or symlinked directories.
+ *
+ * @method expandGlobSegments
+ * @param {String} dir Directory resolved so far.
+ * @param {Array<String>} segments Pattern segments.
+ * @param {Number} index Current segment index.
+ * @return {Generator<String>} Yields candidate paths (existence is not checked).
+ */
+function* expandGlobSegments(dir, segments, index) {
+    if (index === segments.length) {
+        yield dir;
+        return;
+    }
+    const segment = segments[index];
+    if (segment === "**") {
+        yield* expandGlobSegments(dir, segments, index + 1);
+        for (const entry of readDirEntries(dir)) {
+            if (!entry.isDirectory()) {
+                continue;
+            }
+            if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) {
+                continue;
+            }
+            yield* expandGlobSegments(path.join(dir, entry.name), segments, index);
+        }
+        return;
+    }
+    if (!/[*?]/u.test(segment)) {
+        yield* expandGlobSegments(path.join(dir, segment), segments, index + 1);
+        return;
+    }
+    const matcher = globSegmentToRegExp(segment);
+    for (const entry of readDirEntries(dir)) {
+        if (entry.name.startsWith(".") && !segment.startsWith(".")) {
+            continue;
+        }
+        if (!matcher.test(entry.name)) {
+            continue;
+        }
+        yield* expandGlobSegments(path.join(dir, entry.name), segments, index + 1);
+    }
+}
+
+/**
+ * Return true when a path exists and is a regular file (symlinks followed).
+ *
+ * @method isExistingFile
+ * @param {String} p Path to check.
+ * @return {Boolean}
+ */
+function isExistingFile(p) {
+    try {
+        return fs.statSync(p).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Expand parsed pattern segment lists and collect matching files.
+ *
+ * @method collectGlobMatches
+ * @param {Array<Array<String>>} segmentLists Parsed pattern segment lists.
+ * @param {String} cwd Absolute base directory.
+ * @return {Set<String>} Absolute paths of existing files.
+ */
+function collectGlobMatches(segmentLists, cwd) {
+    const found = new Set();
+    for (const segments of segmentLists) {
+        for (const candidate of expandGlobSegments(cwd, segments, 0)) {
+            if (found.has(candidate)) {
+                continue;
+            }
+            if (!isExistingFile(candidate)) {
+                continue;
+            }
+            found.add(candidate);
+        }
+    }
+    return found;
+}
+
+/**
+ * Expand npm workspace glob patterns into existing files below a base directory.
+ * Supports the syntax npm workspaces use in practice: literal segments, `*`, `?`,
+ * `**`, and leading-`!` negation. Unsupported syntax throws a TypeError rather
+ * than silently diverging from npm. Results are absolute, deduplicated, and
+ * sorted for deterministic output.
+ *
+ * @method expandWorkspaceGlobs
+ * @param {Array<String>} patterns Workspace glob patterns (POSIX separators).
+ * @param {String} cwd Absolute base directory.
+ * @return {Array<String>} Sorted absolute paths of matching files.
+ */
+function expandWorkspaceGlobs(patterns, cwd) {
+    const positive = [];
+    const negative = [];
+    for (const raw of patterns) {
+        if (typeof raw === "string" && raw.startsWith("!")) {
+            negative.push(parseGlobPattern(raw.slice(1)));
+            continue;
+        }
+        positive.push(parseGlobPattern(raw));
+    }
+    const matched = collectGlobMatches(positive, cwd);
+    for (const excluded of collectGlobMatches(negative, cwd)) {
+        matched.delete(excluded);
+    }
+    return Array.from(matched).sort();
+}
+
+/**
  * Detect workspace package.json files from root `package.json` workspaces definition.
  *
  * @method detectWorkspaceFiles
@@ -558,12 +748,12 @@ async function detectWorkspaceFiles(repoRoot) {
     if (!patterns.length) {
         return new Set();
     }
-    const matches = await fg(
-        patterns.map((p) => (p.endsWith("package.json") ? p : path.posix.join(p, "package.json"))),
-        { cwd: repoRoot, dot: false, onlyFiles: true },
+    const manifests = patterns.map((p) =>
+        typeof p !== "string" || p.endsWith("package.json")
+            ? p
+            : path.posix.join(p, "package.json"),
     );
-    const abs = matches.map((m) => path.resolve(repoRoot, m));
-    return new Set(abs);
+    return new Set(expandWorkspaceGlobs(manifests, repoRoot));
 }
 
 /**
@@ -574,7 +764,6 @@ async function detectWorkspaceFiles(repoRoot) {
  * @return {Generator<String>} Yields absolute package.json paths.
  */
 function* recursivePackageJsons(repoRoot) {
-    const skip = new Set(["node_modules", ".git"]);
     const stack = [repoRoot];
     while (stack.length) {
         const dir = stack.pop();
@@ -597,7 +786,7 @@ function* recursivePackageJsons(repoRoot) {
             if (!e.isDirectory()) {
                 continue;
             }
-            if (skip.has(e.name)) {
+            if (SKIP_DIRS.has(e.name)) {
                 continue;
             }
             stack.push(path.join(dir, e.name));
@@ -1075,6 +1264,7 @@ export {
     isoZ,
     fromGitEpoch,
     shortCommitId,
+    expandWorkspaceGlobs,
 };
 
 let _isDirectRun = false;
@@ -1248,7 +1438,14 @@ async function main() {
         // targets
         let targets = [];
         if (cfg.workspaces) {
-            const ws = await detectWorkspaceFiles(repoRoot);
+            let ws;
+            try {
+                ws = await detectWorkspaceFiles(repoRoot);
+            } catch (error) {
+                console.error(`autover: ${error.message}`);
+                process.exitCode = 2;
+                return;
+            }
             if (ws === null) {
                 targets = cfg.recursive
                     ? Array.from(recursivePackageJsons(repoRoot))
