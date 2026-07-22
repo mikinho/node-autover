@@ -1033,18 +1033,19 @@ async function stageAndCommit(filesToAdd, { verbose }) {
             throw new Error(`git add failed for ${f}`);
         }
     }
-    const res = spawnSync(
-        "git",
-        [
-            "commit",
-            "--no-verify",
-            "-m",
-            "chore(version): update generated versions",
-            "-m",
-            "Autover-Version: true",
-        ],
-        { encoding: "utf8" },
-    );
+    const args = [
+        "commit",
+        "--no-verify",
+        "-m",
+        "chore(version): update generated versions",
+        "-m",
+        "Autover-Version: true",
+    ];
+    const repoRoot = gitTopDir();
+    if (repoRoot && headIsSigned(repoRoot)) {
+        args.push("-S");
+    }
+    const res = spawnSync("git", args, { encoding: "utf8" });
     if (res.status !== 0) {
         throw new Error("version commit failed");
     } else if (verbose) {

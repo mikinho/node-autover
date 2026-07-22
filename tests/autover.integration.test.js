@@ -393,6 +393,29 @@ describe("autover Git integration", () => {
         assert.match(git("cat-file", "-p", "HEAD"), /^gpgsig /mu);
     });
 
+    it("signs separate version commits when the triggering commit is signed", (t) => {
+        const { repo, git, run } = fixture(t);
+        const keyPath = path.join(repo, "signing-key");
+        const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath], {
+            encoding: "utf8",
+        });
+        assert.equal(keygen.status, 0, keygen.stderr);
+        git("config", "gpg.format", "ssh");
+        git("config", "user.signingkey", keyPath);
+        git("config", "commit.gpgsign", "true");
+        fs.writeFileSync(path.join(repo, "source.js"), "export const signed = true;\n", "utf8");
+        git("add", "source.js");
+        git("commit", "--quiet", "-S", "-m", "signed change");
+        assert.match(git("cat-file", "-p", "HEAD"), /^gpgsig /mu);
+
+        git("config", "commit.gpgsign", "false");
+        const result = run("--separate-commit", "--metadata", "timestamp-sha");
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(git("show", "-s", "--format=%B", "HEAD"), /^Autover-Version: true$/mu);
+        assert.match(git("cat-file", "-p", "HEAD"), /^gpgsig /mu);
+    });
+
     it("rejects an existing release tag before writing", (t) => {
         const { repo, git, run } = fixture(t);
         git("tag", "v1.0.0");
