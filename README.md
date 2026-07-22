@@ -8,7 +8,8 @@ Copyright (c) 2025-2026 Michael Welter <me@mikinho.com>
 A strict SemVer build-metadata versioner for Node.js projects. Stamps commits with a deterministic version derived from
 the author timestamp and, optionally, the triggering commit's short SHA. By default it amends the commit in place;
 projects can instead request a separate, marked version commit. Autover is workspace-aware (Yarn/NPM/PNPM), synchronizes
-npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops.
+npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops. Because it runs as a post-commit hook with
+write access to your history, autover ships with zero runtime dependencies: one file, built entirely on Node.js builtins.
 
 ## Features
 
@@ -18,7 +19,8 @@ npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops.
 - **Pre-release Mode:** `X.Y.<minutesSinceJan1UTC>-<gitsha>` (`--format pre`) for channels that require a prerelease
   identifier.
 - **Workspace-Aware:** Uses declared `workspaces` metadata and versions only packages changed by the triggering commit;
-  broad recursive discovery requires explicit `--recursive` opt-in.
+  broad recursive discovery requires explicit `--recursive` opt-in. Workspace globs support literal paths, `*`, `?`,
+  `**`, and leading-`!` negation; unsupported glob syntax exits with code 2 rather than guessing.
 - **Lockfile Synchronization:** Updates matching `package-lock.json` or `npm-shrinkwrap.json` version fields without
   dependency resolution.
 - **Safe Amend:** Preserves author date, committer date, signature state, commit message, JSON formatting, and file modes.
@@ -27,6 +29,8 @@ npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops.
   reachable triggering commit.
 - **Reentrancy Lock:** Atomic `O_EXCL` lock file prevents recursive post-commit hook loops.
 - **CI-Friendly:** `skipOnCI` silently exits when `CI=true`; `--guard-unchanged` returns exit code 4 for no-op runs.
+- **Zero Dependencies:** A single-file CLI built entirely on Node.js builtins — nothing in the supply chain of a tool
+  that rewrites your commits.
 
 ## Quick Start
 
@@ -130,7 +134,7 @@ Or the path configured via `lockPath` in `.autoverrc.json`.
 ## Development
 
 ```bash
-# install dependencies
+# install dev dependencies (autover itself has none)
 npm install
 
 # run unit tests (node:test, zero external deps)

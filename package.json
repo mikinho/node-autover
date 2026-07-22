@@ -1,7 +1,7 @@
 {
     "name": "@mikinho/autover",
     "version": "3.1.0",
-    "description": "Strict SemVer build-metadata versioner for Node.js — deterministic timestamps, workspace-aware, and Git-safe",
+    "description": "Strict SemVer build-metadata versioner for Node.js — zero dependencies, deterministic timestamps, workspace-aware, and Git-safe",
     "bin": {
         "autover": "bin/autover.js"
     },
@@ -31,7 +31,8 @@
         "cli",
         "ci-cd",
         "package-version",
-        "developer-tools"
+        "developer-tools",
+        "zero-dependency"
     ],
     "engines": {
         "node": ">=20.19.0"
