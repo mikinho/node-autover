@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
     pack:
-        name: ${{ matrix.os }} / Node 20.19.0
+        name: ${{ matrix.os }} / Node 22.13.0
         runs-on: ${{ matrix.os }}
         timeout-minutes: 10
         strategy:
@@ -32,7 +32,7 @@ jobs:
             - name: Setup Node
               uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
               with:
-                  node-version: "20.19.0"
+                  node-version: "22.13.0"
                   cache: npm
 
             - name: Install dependencies

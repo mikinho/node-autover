@@ -13,7 +13,7 @@ write access to your history, autover ships with zero runtime dependencies: one 
 
 ## Supported Environments
 
-- Node.js 20.19.0 or newer. Node.js 22 and 24 are recommended; Node.js 20.19 remains supported through the current major release for compatibility.
+- Node.js 22.13.0 or newer. The exact minimum and Node.js 24 are exercised in CI.
 - Git 1.8.2 or newer for repository operations.
 - Linux and Windows are exercised in CI, including installation of the packed command at the exact Node.js minimum. Maintainer validation also covers macOS.
 - npm supplies the installed `autover` launcher and is required for hook installation through `npx --no-install`.
@@ -130,6 +130,8 @@ Configuration is schema-validated and fails closed. Unknown keys, malformed JSON
 `tagOnChange` has been removed. Generated build versions no longer create lightweight `vX.Y.Z` tags because build
 metadata is stripped from those tag names and subsequent commits collide with the first tag. Remove the key from
 `.autoverrc.json`; create release tags through the documented signed release process instead.
+
+Node.js 20 support has been removed. Upgrade consumers to Node.js 22.13.0 or newer before installing v4.
 
 ### Machine-readable output
 

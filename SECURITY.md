@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release. Node.js 22 and 24 are the recommended runtime lines. Node.js 20.19 remains tested only to preserve the current major-version compatibility contract and will be removed at the next major release because upstream support has ended.
+Security fixes are provided for the latest published release on supported Node.js release lines. The package requires Node.js 22.13.0 or newer; the exact minimum and Node.js 24 are exercised in CI.
 
 ## Reporting a vulnerability
 
