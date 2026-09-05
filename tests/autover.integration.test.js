@@ -167,6 +167,37 @@ describe("autover Git integration", () => {
         );
     });
 
+    it("updates multiple workspaces and their shared lockfile in one version commit", (t) => {
+        const { repo, git, run, json } = fixture(t, { workspaces: true });
+        for (const name of ["a", "b"]) {
+            fs.appendFileSync(
+                path.join(repo, "packages", name, "source.js"),
+                `export const changed${name.toUpperCase()} = true;\n`,
+            );
+        }
+        git("add", "packages/a/source.js", "packages/b/source.js");
+        git("commit", "--quiet", "-m", "change both workspaces");
+        const triggeringSha = git("rev-parse", "--short=7", "HEAD");
+
+        const result = run(
+            "--workspaces",
+            "--separate-commit",
+            "--metadata",
+            "timestamp-sha",
+            "--short",
+        );
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /3 files updated/u);
+        const lock = json("package-lock.json");
+        for (const name of ["a", "b"]) {
+            const version = json(`packages/${name}/package.json`).version;
+            assert.match(version, new RegExp(`^1\\.0\\.0\\+\\d+\\.${triggeringSha}$`, "u"));
+            assert.equal(lock.packages[`packages/${name}`].version, version);
+        }
+        assert.equal(git("rev-list", "--count", "HEAD"), "3");
+    });
+
     it("does not recursively discover undeclared packages without opt-in", (t) => {
         const { repo, git, run, json } = fixture(t);
         const nested = path.join(repo, "fixtures", "nested");

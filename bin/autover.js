@@ -54,6 +54,9 @@ const LOCKFILE_DEFAULT = ".git/autover.lock";
 /** @const {Set<String>} SKIP_DIRS Directories never traversed during package discovery. */
 const SKIP_DIRS = new Set(["node_modules", ".git"]);
 
+/** @const {number} GIT_PATH_BATCH_CHAR_LIMIT Conservative cross-platform argument batch size. */
+const GIT_PATH_BATCH_CHAR_LIMIT = 16_000;
+
 /** @const {Object} defaultOptions */
 const defaultOptions = {
     file: null,
@@ -994,12 +997,7 @@ async function stageAndAmend(filesToAdd, { verbose }) {
         }
         return;
     }
-    for (const f of filesToAdd) {
-        const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
-        if (res.status !== 0) {
-            throw new Error(`git add failed for ${f}`);
-        }
-    }
+    stageFiles(filesToAdd);
     const env = { ...process.env };
     const aISO = authorISO();
     const cISO = committerISO();
@@ -1033,12 +1031,7 @@ async function stageAndCommit(filesToAdd, { verbose }) {
     if (!filesToAdd.length) {
         return;
     }
-    for (const f of filesToAdd) {
-        const res = spawnSync("git", ["add", "--", f], { encoding: "utf8" });
-        if (res.status !== 0) {
-            throw new Error(`git add failed for ${f}`);
-        }
-    }
+    stageFiles(filesToAdd);
     const args = [
         "commit",
         "--no-verify",
@@ -1061,38 +1054,78 @@ async function stageAndCommit(filesToAdd, { verbose }) {
 }
 
 /**
- * Synchronize an npm lockfile entry with a package version.
+ * Stage generated paths in bounded batches.
  *
- * @method syncLockfileVersion
- * @async
+ * @method stageFiles
+ * @param {Array<String>} files Absolute file paths to stage.
+ * @return {void}
+ */
+function stageFiles(files) {
+    let batch = [];
+    let batchChars = 0;
+    const flush = () => {
+        if (!batch.length) {
+            return;
+        }
+        const res = spawnSync("git", ["add", "--", ...batch], { encoding: "utf8" });
+        if (res.status !== 0) {
+            const detail = (res.stderr || "").trim();
+            throw new Error(
+                `git add failed for ${batch.length} generated file(s)${detail ? `: ${detail}` : ""}`,
+            );
+        }
+        batch = [];
+        batchChars = 0;
+    };
+    for (const file of files) {
+        const fileChars = file.length + 1;
+        if (batch.length && batchChars + fileChars > GIT_PATH_BATCH_CHAR_LIMIT) {
+            flush();
+        }
+        batch.push(file);
+        batchChars += fileChars;
+    }
+    flush();
+}
+
+/**
+ * Find the closest npm lockfile owned by the repository for a package manifest.
+ *
+ * @method findNpmLockfile
  * @param {String} repoRoot Repository root.
  * @param {String} packageJsonPath Package manifest path.
- * @param {String} version Generated version.
- * @param {Boolean} dryRun Whether writes are disabled.
- * @return {Promise<String|null>} Changed lockfile path, or null.
+ * @return {String|null} Absolute lockfile path, or null.
  */
-async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
+function findNpmLockfile(repoRoot, packageJsonPath) {
     const packageDir = path.dirname(packageJsonPath);
     let current = packageDir;
-    let lockfilePath = null;
     while (current === repoRoot || current.startsWith(`${repoRoot}${path.sep}`)) {
         for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
             const candidate = path.join(current, name);
             if (fs.existsSync(candidate)) {
-                lockfilePath = candidate;
-                break;
+                return candidate;
             }
         }
-        if (lockfilePath || current === repoRoot) {
+        if (current === repoRoot) {
             break;
         }
         current = path.dirname(current);
     }
-    if (!lockfilePath) {
-        return null;
-    }
+    return null;
+}
 
-    const lock = await readJSON(lockfilePath);
+/**
+ * Apply one package version to an already parsed npm lockfile.
+ *
+ * @method updateLockfileVersion
+ * @param {Object} lock Parsed lockfile.
+ * @param {String} lockfilePath Absolute lockfile path.
+ * @param {String} packageJsonPath Absolute package manifest path.
+ * @param {String} version Generated version.
+ * @return {Boolean} True when the lockfile data changed.
+ */
+function updateLockfileVersion(lock, lockfilePath, packageJsonPath, version) {
+    const packageDir = path.dirname(packageJsonPath);
     let changed = false;
     const lockRoot = path.dirname(lockfilePath);
     const rel = path.relative(lockRoot, packageDir).replace(/\\/gu, "/");
@@ -1107,13 +1140,44 @@ async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
             changed = true;
         }
     }
-    if (!changed) {
-        return null;
+    return changed;
+}
+
+/**
+ * Read each affected npm lockfile once and aggregate all package version edits.
+ *
+ * @method planLockfileUpdates
+ * @async
+ * @param {String} repoRoot Repository root.
+ * @param {Array<{packageJsonPath: String, pkg: Object, version: String}>} packagePlans Package update plans.
+ * @return {Promise<Map<String, {data: Object, changed: Boolean}>>} Changed lockfiles keyed by absolute path.
+ */
+async function planLockfileUpdates(repoRoot, packagePlans) {
+    const lockfilePlans = new Map();
+    for (const packagePlan of packagePlans) {
+        const lockfilePath = findNpmLockfile(repoRoot, packagePlan.packageJsonPath);
+        if (!lockfilePath) {
+            continue;
+        }
+        let lockfilePlan = lockfilePlans.get(lockfilePath);
+        if (!lockfilePlan) {
+            lockfilePlan = { data: await readJSON(lockfilePath), changed: false };
+            lockfilePlans.set(lockfilePath, lockfilePlan);
+        }
+        lockfilePlan.changed =
+            updateLockfileVersion(
+                lockfilePlan.data,
+                lockfilePath,
+                packagePlan.packageJsonPath,
+                packagePlan.version,
+            ) || lockfilePlan.changed;
     }
-    if (!dryRun) {
-        await atomicWriteJSON(lockfilePath, lock);
+    for (const [lockfilePath, lockfilePlan] of lockfilePlans) {
+        if (!lockfilePlan.changed) {
+            lockfilePlans.delete(lockfilePath);
+        }
     }
-    return lockfilePath;
+    return lockfilePlans;
 }
 
 /**
@@ -1558,7 +1622,7 @@ async function main() {
             }
         }
 
-        const lockfilePlans = new Map();
+        let lockfilePlans;
         try {
             for (const plan of plans) {
                 if (!cfg.dryRun && pathIsDirty(repoRoot, plan.packageJsonPath)) {
@@ -1568,21 +1632,15 @@ async function main() {
                     process.exitCode = 1;
                     return;
                 }
-                const lockfile = await syncLockfileVersion(
-                    repoRoot,
-                    plan.packageJsonPath,
-                    plan.version,
-                    true,
-                );
-                if (lockfile) {
-                    if (!cfg.dryRun && pathIsDirty(repoRoot, lockfile)) {
-                        console.error(
-                            `autover: generated target has uncommitted changes: ${lockfile}`,
-                        );
-                        process.exitCode = 1;
-                        return;
-                    }
-                    lockfilePlans.set(lockfile, true);
+            }
+            lockfilePlans = await planLockfileUpdates(repoRoot, plans);
+            for (const lockfilePath of lockfilePlans.keys()) {
+                if (!cfg.dryRun && pathIsDirty(repoRoot, lockfilePath)) {
+                    console.error(
+                        `autover: generated target has uncommitted changes: ${lockfilePath}`,
+                    );
+                    process.exitCode = 1;
+                    return;
                 }
             }
         } catch (error) {
@@ -1616,15 +1674,12 @@ async function main() {
                     await atomicWriteJSON(plan.packageJsonPath, plan.pkg);
                 }
                 changedFiles.push(plan.packageJsonPath);
-                const lockfile = await syncLockfileVersion(
-                    repoRoot,
-                    plan.packageJsonPath,
-                    plan.version,
-                    cfg.dryRun,
-                );
-                if (lockfile && !changedFiles.includes(lockfile)) {
-                    changedFiles.push(lockfile);
+            }
+            for (const [lockfilePath, lockfilePlan] of lockfilePlans) {
+                if (!cfg.dryRun) {
+                    await atomicWriteJSON(lockfilePath, lockfilePlan.data);
                 }
+                changedFiles.push(lockfilePath);
             }
 
             if (!cfg.noAmend && !cfg.dryRun) {
