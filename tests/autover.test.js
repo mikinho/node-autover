@@ -281,6 +281,21 @@ describe("parseArgs", () => {
         }
     });
 
+    it("rejects a mutating commit mode with --check", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--check", "--separate-commit"]), /exit/u);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
     it("parses --file / -f with value", () => {
         assert.equal(parseArgs(["--file", "pkg.json"]).file, "pkg.json");
         assert.equal(parseArgs(["-f", "other.json"]).file, "other.json");
@@ -293,11 +308,13 @@ describe("parseArgs", () => {
         assert.equal(parseArgs(["--separate-commit"]).separateCommit, true);
         assert.equal(parseArgs(["--no-skip-ci"]).skipOnCI, false);
         assert.equal(parseArgs(["--dry-run"]).dryRun, true);
+        assert.equal(parseArgs(["--check"]).check, true);
         assert.equal(parseArgs(["--verbose"]).verbose, true);
         assert.equal(parseArgs(["-v"]).verbose, true);
         assert.equal(parseArgs(["--quiet"]).quiet, true);
         assert.equal(parseArgs(["-q"]).quiet, true);
         assert.equal(parseArgs(["--short"]).short, true);
+        assert.equal(parseArgs(["--json"]).json, true);
         assert.equal(parseArgs(["--guard-unchanged"]).guardUnchanged, true);
     });
 

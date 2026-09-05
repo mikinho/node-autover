@@ -57,6 +57,9 @@ const SKIP_DIRS = new Set(["node_modules", ".git"]);
 /** @const {number} GIT_PATH_BATCH_CHAR_LIMIT Conservative cross-platform argument batch size. */
 const GIT_PATH_BATCH_CHAR_LIMIT = 16_000;
 
+/** @const {number} OUTPUT_SCHEMA_VERSION Machine-readable result schema version. */
+const OUTPUT_SCHEMA_VERSION = 1;
+
 /** @const {Object} defaultOptions */
 const defaultOptions = {
     file: null,
@@ -64,9 +67,11 @@ const defaultOptions = {
     recursive: false,
     noAmend: false,
     dryRun: false,
+    check: false,
     verbose: false,
     quiet: false,
     short: false,
+    json: false,
     format: "build",
     metadata: "timestamp",
     separateCommit: false,
@@ -860,6 +865,7 @@ function validateConfig(config) {
         verbose: ["boolean"],
         quiet: ["boolean"],
         short: ["boolean"],
+        json: ["boolean"],
         format: ["string"],
         metadata: ["string"],
         guardUnchanged: ["boolean"],
@@ -878,7 +884,7 @@ function validateConfig(config) {
             throw new TypeError(`configuration key "${key}" must be ${types[key].join(" or ")}`);
         }
     }
-    const outputModes = ["verbose", "quiet", "short"].filter((key) => config[key] === true);
+    const outputModes = ["verbose", "quiet", "short", "json"].filter((key) => config[key] === true);
     if (outputModes.length > 1) {
         throw new TypeError(
             `configuration output modes ${outputModes.join(", ")} are mutually exclusive`,
@@ -910,6 +916,7 @@ async function doInit(repoRoot) {
         skipOnCI: true,
         short: true,
         quiet: false,
+        json: false,
         rootAlso: true,
         tagOnChange: false,
         lockPath: ".git/autover.lock",
@@ -1225,7 +1232,7 @@ function updateLockfileVersion(lock, lockfilePath, packageJsonPath, version) {
  * @async
  * @param {String} repoRoot Repository root.
  * @param {Array<{packageJsonPath: String, pkg: Object, version: String}>} packagePlans Package update plans.
- * @return {Promise<Map<String, {data: Object, changed: Boolean}>>} Changed lockfiles keyed by absolute path.
+ * @return {Promise<Map<String, {data: Object, changed: Boolean, packages: Array<{packageJsonPath: String, version: String}>}>>} Changed lockfiles keyed by absolute path.
  */
 async function planLockfileUpdates(repoRoot, packagePlans) {
     const lockfilePlans = new Map();
@@ -1236,16 +1243,22 @@ async function planLockfileUpdates(repoRoot, packagePlans) {
         }
         let lockfilePlan = lockfilePlans.get(lockfilePath);
         if (!lockfilePlan) {
-            lockfilePlan = { data: await readJSON(lockfilePath), changed: false };
+            lockfilePlan = { data: await readJSON(lockfilePath), changed: false, packages: [] };
             lockfilePlans.set(lockfilePath, lockfilePlan);
         }
-        lockfilePlan.changed =
-            updateLockfileVersion(
-                lockfilePlan.data,
-                lockfilePath,
-                packagePlan.packageJsonPath,
-                packagePlan.version,
-            ) || lockfilePlan.changed;
+        const changed = updateLockfileVersion(
+            lockfilePlan.data,
+            lockfilePath,
+            packagePlan.packageJsonPath,
+            packagePlan.version,
+        );
+        if (changed) {
+            lockfilePlan.changed = true;
+            lockfilePlan.packages.push({
+                packageJsonPath: packagePlan.packageJsonPath,
+                version: packagePlan.version,
+            });
+        }
     }
     for (const [lockfilePath, lockfilePlan] of lockfilePlans) {
         if (!lockfilePlan.changed) {
@@ -1299,6 +1312,98 @@ function maybeTag(tagOnChange, version, changed, verbose) {
 }
 
 /**
+ * Return the public execution-mode name for machine output.
+ *
+ * @method executionMode
+ * @param {Object} cfg Effective configuration.
+ * @return {String} `apply`, `dry-run`, or `check`.
+ */
+function executionMode(cfg) {
+    if (cfg.check) {
+        return "check";
+    }
+    return cfg.dryRun ? "dry-run" : "apply";
+}
+
+/**
+ * Emit one versioned JSON result document to stdout.
+ *
+ * @method printJsonResult
+ * @param {Object} details Result details.
+ * @param {Object} details.cfg Effective configuration.
+ * @param {String} details.repoRoot Repository root.
+ * @param {String} details.commitid Triggering commit abbreviation.
+ * @param {String} details.gitTs Triggering commit author timestamp.
+ * @param {Array<String>} details.changedFiles Planned or updated files.
+ * @param {Array<{packageJsonPath: String, previousVersion: String, version: String}>} details.plans Package plans.
+ * @param {Map<String, {packages: Array<{packageJsonPath: String, version: String}>}>} details.lockfilePlans Lockfile plans.
+ * @return {void}
+ */
+function printJsonResult({ cfg, repoRoot, commitid, gitTs, changedFiles, plans, lockfilePlans }) {
+    const relative = (target) => path.relative(repoRoot, target).replace(/\\/gu, "/");
+    const changed = changedFiles.length > 0;
+    let outcome = "current";
+    if (changed) {
+        outcome = cfg.check ? "drift" : cfg.dryRun ? "would-update" : "updated";
+    }
+    const result = {
+        schemaVersion: OUTPUT_SCHEMA_VERSION,
+        mode: executionMode(cfg),
+        outcome,
+        applied: changed && !cfg.dryRun,
+        commit: {
+            sha: commitid,
+            authorTimestamp: Number(gitTs),
+            authoredAt: isoZ(fromGitEpoch(gitTs)),
+        },
+        files: changedFiles.map(relative).sort(),
+        packages: plans
+            .map((plan) => ({
+                path: relative(plan.packageJsonPath),
+                from: plan.previousVersion,
+                to: plan.version,
+            }))
+            .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+        lockfiles: Array.from(lockfilePlans, ([lockfilePath, lockfilePlan]) => ({
+            path: relative(lockfilePath),
+            packages: lockfilePlan.packages
+                .map((packagePlan) => ({
+                    path: relative(packagePlan.packageJsonPath),
+                    version: packagePlan.version,
+                }))
+                .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+        })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    };
+    console.log(JSON.stringify(result));
+}
+
+/**
+ * Emit a machine-readable skip result when JSON output was requested.
+ *
+ * @method printJsonSkip
+ * @param {Object} cfg Effective configuration.
+ * @param {String} reason Stable skip reason.
+ * @return {void}
+ */
+function printJsonSkip(cfg, reason) {
+    if (!cfg.json) {
+        return;
+    }
+    console.log(
+        JSON.stringify({
+            schemaVersion: OUTPUT_SCHEMA_VERSION,
+            mode: executionMode(cfg),
+            outcome: "skipped",
+            reason,
+            applied: false,
+            files: [],
+            packages: [],
+            lockfiles: [],
+        }),
+    );
+}
+
+/**
  * Parse CLI arguments into a normalized options object.
  *
  * @method parseArgs
@@ -1319,6 +1424,7 @@ function parseArgs(argv) {
         out.verbose = mode === "verbose";
         out.quiet = mode === "quiet";
         out.short = mode === "short";
+        out.json = mode === "json";
     };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
@@ -1353,6 +1459,8 @@ function parseArgs(argv) {
             out.separateCommit = true;
         } else if (a === "--dry-run") {
             out.dryRun = true;
+        } else if (a === "--check") {
+            out.check = true;
         } else if (a === "--no-skip-ci") {
             out.skipOnCI = false;
         } else if (a === "-v" || a === "--verbose") {
@@ -1361,6 +1469,8 @@ function parseArgs(argv) {
             selectOutputMode("quiet");
         } else if (a === "--short") {
             selectOutputMode("short");
+        } else if (a === "--json") {
+            selectOutputMode("json");
         } else if (a === "--format") {
             const fmt = takeValue().toLowerCase();
             if (fmt !== "build" && fmt !== "pre") {
@@ -1398,6 +1508,14 @@ function parseArgs(argv) {
         );
         process.exit(2);
     }
+    if (actions.length && out.check) {
+        console.error(`autover: --check cannot be combined with --${actions[0]}`);
+        process.exit(2);
+    }
+    if (out.check && out.separateCommit) {
+        console.error("autover: --check and --separate-commit are mutually exclusive");
+        process.exit(2);
+    }
     return out;
 }
 
@@ -1416,8 +1534,8 @@ function printHelp() {
             "  npx autover [--file PATH | --workspaces [--recursive]]",
             "               [--format build|pre] [--patch N]",
             "               [--metadata timestamp|timestamp-sha]",
-            "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]",
-            "               [--no-skip-ci] [--verbose] [--quiet] [--short]",
+            "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]",
+            "               [--no-skip-ci] [--verbose | --quiet | --short | --json]",
             "               [--init | --install | --uninstall]",
             "",
             "Examples:",
@@ -1517,10 +1635,17 @@ async function main() {
     }
 
     const cfg = { ...defaultOptions, ...configOptions, ...args };
+    if (cfg.check) {
+        cfg.dryRun = true;
+        cfg.noAmend = true;
+        cfg.separateCommit = false;
+        cfg.skipOnCI = false;
+    }
 
     // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
     const lk = cfg.dryRun ? null : lockPath(cfg.lockPath, repoRoot);
     if (lk && !acquireLock(lk)) {
+        printJsonSkip(cfg, "lock-present");
         if (!cfg.quiet && (cfg.short || cfg.verbose)) {
             console.log("autover: lock present; exiting.");
         }
@@ -1590,12 +1715,14 @@ async function main() {
             return;
         }
         if (skipOnCI && process.env.CI) {
+            printJsonSkip(cfg, "ci");
             if (!cfg.quiet && (cfg.verbose || cfg.short)) {
                 console.log("autover: CI detected and skipOnCI=true; exiting.");
             }
             return;
         }
         if (isAutoverCommit()) {
+            printJsonSkip(cfg, "generated-commit");
             if (!cfg.quiet && (cfg.verbose || cfg.short)) {
                 console.log("autover: generated version commit detected; exiting.");
             }
@@ -1667,6 +1794,7 @@ async function main() {
 
         const changedFiles = [];
         const plans = [];
+        const versionPlans = [];
         let lastDate = null;
         let firstChangedVersion = null;
 
@@ -1695,6 +1823,13 @@ async function main() {
 
             lastDate = dt;
             const oldVer = String(pkg.version ?? "");
+            const versionPlan = {
+                packageJsonPath: pj,
+                pkg,
+                previousVersion: oldVer,
+                version: newVer,
+            };
+            versionPlans.push(versionPlan);
 
             if (cfg.verbose) {
                 const rel = path.relative(repoRoot, pj).replace(/\\/g, "/");
@@ -1705,7 +1840,7 @@ async function main() {
                 continue;
             }
             pkg.version = newVer;
-            plans.push({ packageJsonPath: pj, pkg, version: newVer });
+            plans.push(versionPlan);
             if (!firstChangedVersion) {
                 firstChangedVersion = newVer;
             }
@@ -1722,7 +1857,7 @@ async function main() {
                     return;
                 }
             }
-            lockfilePlans = await planLockfileUpdates(repoRoot, plans);
+            lockfilePlans = await planLockfileUpdates(repoRoot, versionPlans);
             for (const lockfilePath of lockfilePlans.keys()) {
                 if (!cfg.dryRun && pathIsDirty(repoRoot, lockfilePath)) {
                     console.error(
@@ -1751,9 +1886,11 @@ async function main() {
             new Set([...plans.map((plan) => plan.packageJsonPath), ...lockfilePlans.keys()]),
         );
         const snapshots = new Map();
-        for (const target of snapshotPaths) {
-            const stat = await fsp.stat(target);
-            snapshots.set(target, { content: await fsp.readFile(target), mode: stat.mode });
+        if (!cfg.dryRun) {
+            for (const target of snapshotPaths) {
+                const stat = await fsp.stat(target);
+                snapshots.set(target, { content: await fsp.readFile(target), mode: stat.mode });
+            }
         }
 
         try {
@@ -1796,10 +1933,49 @@ async function main() {
             return;
         }
 
+        if (cfg.check) {
+            if (cfg.json) {
+                printJsonResult({
+                    cfg,
+                    repoRoot,
+                    commitid,
+                    gitTs,
+                    changedFiles,
+                    plans,
+                    lockfilePlans,
+                });
+            } else if (!cfg.quiet && cfg.short) {
+                const ts = isoZ(lastDate || fromGitEpoch(gitTs));
+                const version = firstChangedVersion || "current";
+                console.log(
+                    `autover: ${changedFiles.length} files would update | ${version} | ${ts}`,
+                );
+            } else if (!cfg.quiet) {
+                const result = changedFiles.length
+                    ? `${changedFiles.length} generated file(s) need updates`
+                    : "generated versions are current";
+                console.log(
+                    `autover: check ${changedFiles.length ? "failed" : "passed"}; ${result}.`,
+                );
+            }
+            process.exitCode = changedFiles.length ? 3 : 0;
+            return;
+        }
+
         if (cfg.guardUnchanged && changedFiles.length === 0) {
             if (!cfg.quiet) {
                 const ts = isoZ(lastDate || new Date());
-                if (cfg.short) {
+                if (cfg.json) {
+                    printJsonResult({
+                        cfg,
+                        repoRoot,
+                        commitid,
+                        gitTs,
+                        changedFiles,
+                        plans,
+                        lockfilePlans,
+                    });
+                } else if (cfg.short) {
                     console.log(`autover: 0 files updated | unchanged | ${ts}`);
                 } else if (cfg.verbose) {
                     console.log(
@@ -1819,6 +1995,19 @@ async function main() {
                 process.exitCode = 1;
                 return;
             }
+        }
+
+        if (cfg.json) {
+            printJsonResult({
+                cfg,
+                repoRoot,
+                commitid,
+                gitTs,
+                changedFiles,
+                plans,
+                lockfilePlans,
+            });
+            return;
         }
 
         if (!cfg.quiet && cfg.short) {

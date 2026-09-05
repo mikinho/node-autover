@@ -59,6 +59,9 @@ npx autover --uninstall
 # preview one-liner
 npx autover --no-amend --dry-run --short
 
+# fail without writing when generated versions have drifted
+npx autover --check --json
+
 # typical dev flow: just commit; post-commit hook runs autover
 git commit -sm "change";  # hook amends with version if needed
 ```
@@ -79,18 +82,19 @@ commits with the same author minute intentionally share a version.
 npx autover [--file PATH | --workspaces [--recursive]]
              [--format build|pre] [--patch N]
              [--metadata timestamp|timestamp-sha]
-             [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]
+             [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]
              [--no-skip-ci]
-             [--verbose] [--quiet] [--short]
+             [--verbose | --quiet | --short | --json]
              [--init | --install | --uninstall]
 ```
 
 `--file` and `--workspaces` are mutually exclusive, as are `--no-amend` and `--separate-commit`. `--recursive` requires
 `--workspaces`. `--patch` is not supported with `--format pre` and must be a non-negative integer. `--no-skip-ci`
 explicitly overrides `skipOnCI` for a guarded CI workflow. Commit-producing modes require an empty index and clean
-generated manifests/lockfiles. `--verbose`, `--quiet`, and `--short` are mutually exclusive; an explicitly supplied
-CLI output mode replaces the configured mode. `--init`, `--install`, and `--uninstall` are mutually exclusive. Dry-run
-summaries say files "would update" and never claim a write.
+generated manifests/lockfiles. `--check` never writes, ignores `skipOnCI`, and exits `3` when updates are required.
+`--verbose`, `--quiet`, `--short`, and `--json` are mutually exclusive; an explicitly supplied CLI output mode replaces
+the configured mode. `--init`, `--install`, and `--uninstall` are mutually exclusive. Dry-run summaries say files
+"would update" and never claim a write.
 
 ## Config
 
@@ -107,6 +111,7 @@ summaries say files "would update" and never claim a write.
     "skipOnCI": true,
     "short": true,
     "quiet": false,
+    "json": false,
     "rootAlso": true,
     "tagOnChange": false,
     "lockPath": ".git/autover.lock",
@@ -117,6 +122,15 @@ summaries say files "would update" and never claim a write.
 
 Configuration is schema-validated and fails closed. Unknown keys, malformed JSON, incorrect value types, and invalid
 `format`, `metadata`, or `patch` values exit with code 2.
+
+### Machine-readable output
+
+`--json` emits exactly one compact JSON document on stdout for a successfully planned, applied, or skipped invocation.
+Schema version `1` contains `mode`, `outcome`, `applied`, normalized repository-relative `files`, and package `from`/`to`
+versions. Its `lockfiles` entries identify the package versions synchronized into each lockfile. Planned results also
+identify the triggering commit. Consumers should reject unknown schema versions, require documented fields, and
+tolerate additive fields. Usage and operational errors remain diagnostics on stderr with a nonzero exit status and do
+not promise a JSON document.
 
 ## CI
 
@@ -132,6 +146,7 @@ without force-pushing commits or tags.
 | 0    | Success (files updated or nothing to do without `--guard-unchanged`)      |
 | 1    | Fatal error (no git, no repo, amend failed, etc.)                         |
 | 2    | Bad arguments (`--format`, `--patch`, unknown flags, conflicting options) |
+| 3    | `--check` found generated manifests or lockfiles that need updates        |
 | 4    | `--guard-unchanged` active and no version changes needed                  |
 
 ## Troubleshooting

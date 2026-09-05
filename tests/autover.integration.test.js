@@ -239,6 +239,52 @@ describe("autover Git integration", () => {
         assert.equal(fs.existsSync(path.join(repo, ".git", "autover.lock")), false);
     });
 
+    it("reports version drift as schema-versioned JSON without writing", (t) => {
+        const { repo, run, json } = fixture(t);
+        const packagePath = path.join(repo, "package.json");
+        const before = fs.readFileSync(packagePath, "utf8");
+
+        const drift = run("--check", "--json");
+        assert.equal(drift.status, 3, drift.stderr);
+        assert.equal(fs.readFileSync(packagePath, "utf8"), before);
+        const result = JSON.parse(drift.stdout);
+        assert.equal(result.schemaVersion, 1);
+        assert.equal(result.mode, "check");
+        assert.equal(result.outcome, "drift");
+        assert.equal(result.applied, false);
+        assert.deepEqual(result.files, ["package-lock.json", "package.json"]);
+        assert.deepEqual(result.packages[0], {
+            path: "package.json",
+            from: "1.0.0",
+            to: result.packages[0].to,
+        });
+
+        const apply = run("--no-amend", "--json");
+        assert.equal(apply.status, 0, apply.stderr);
+        const applied = JSON.parse(apply.stdout);
+        assert.equal(applied.outcome, "updated");
+        assert.equal(applied.applied, true);
+        assert.match(json("package.json").version, /^1\.0\.0\+\d+$/u);
+        const current = run("--check", "--json");
+        assert.equal(current.status, 0, current.stderr);
+        assert.equal(JSON.parse(current.stdout).outcome, "current");
+
+        const lockPath = path.join(repo, "package-lock.json");
+        const staleLock = json("package-lock.json");
+        staleLock.packages[""].version = "0.0.0";
+        fs.writeFileSync(lockPath, `${JSON.stringify(staleLock, null, 4)}\n`);
+        const lockDrift = run("--check", "--json");
+        assert.equal(lockDrift.status, 3, lockDrift.stderr);
+        const lockResult = JSON.parse(lockDrift.stdout);
+        assert.deepEqual(lockResult.files, ["package-lock.json"]);
+        assert.deepEqual(lockResult.lockfiles, [
+            {
+                path: "package-lock.json",
+                packages: [{ path: "package.json", version: applied.packages[0].to }],
+            },
+        ]);
+    });
+
     it("rejects conflicting configured output modes", (t) => {
         const { repo, run } = fixture(t);
         fs.writeFileSync(
