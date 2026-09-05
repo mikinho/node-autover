@@ -376,7 +376,7 @@ describe("autover Git integration", () => {
         }
     });
 
-    it("preserves existing hooks and installs one idempotent managed block", (t) => {
+    it("preserves existing hooks across managed install and uninstall", (t) => {
         const { repo, run } = fixture(t);
         const hooksDir = path.join(repo, ".custom-hooks");
         fs.mkdirSync(hooksDir);
@@ -389,6 +389,25 @@ describe("autover Git integration", () => {
         assert.match(hook, /echo existing/u);
         assert.match(hook, /npx --no-install autover/u);
         assert.equal((hook.match(/>>> autover managed block >>>/gu) || []).length, 1);
+
+        assert.equal(run("--uninstall").status, 0);
+        const uninstalled = fs.readFileSync(path.join(hooksDir, "post-commit"), "utf8");
+        assert.match(uninstalled, /echo existing/u);
+        assert.doesNotMatch(uninstalled, /autover managed block/u);
+        assert.equal(fs.existsSync(path.join(hooksDir, "post-commit.cmd")), false);
+    });
+
+    it("deletes hook files that autover can prove it created", (t) => {
+        const { repo, git, run } = fixture(t);
+        const hooksDir = path.join(repo, ".owned-hooks");
+        git("config", "core.hooksPath", hooksDir);
+
+        assert.equal(run("--install").status, 0);
+        assert.equal(fs.existsSync(path.join(hooksDir, "post-commit")), true);
+        assert.equal(fs.existsSync(path.join(hooksDir, "post-commit.cmd")), true);
+        assert.equal(run("--uninstall").status, 0);
+        assert.equal(fs.existsSync(path.join(hooksDir, "post-commit")), false);
+        assert.equal(fs.existsSync(path.join(hooksDir, "post-commit.cmd")), false);
     });
 
     it("restores files and index when a generated commit fails", (t) => {

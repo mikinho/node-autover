@@ -260,9 +260,25 @@ describe("parseArgs", () => {
         assert.equal(parseArgs(["-V"]).version, true);
     });
 
-    it("parses --init and --install", () => {
+    it("parses hook and config management actions", () => {
         assert.equal(parseArgs(["--init"]).init, true);
         assert.equal(parseArgs(["--install"]).install, true);
+        assert.equal(parseArgs(["--uninstall"]).uninstall, true);
+    });
+
+    it("rejects conflicting management actions", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--init", "--install"]), /exit/u);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
     });
 
     it("parses --file / -f with value", () => {

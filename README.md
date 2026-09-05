@@ -53,6 +53,9 @@ npx autover --init
 # install hooks (respects core.hooksPath)
 npx autover --install
 
+# remove only autover-managed hook blocks
+npx autover --uninstall
+
 # preview one-liner
 npx autover --no-amend --dry-run --short
 
@@ -79,14 +82,15 @@ npx autover [--file PATH | --workspaces [--recursive]]
              [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]
              [--no-skip-ci]
              [--verbose] [--quiet] [--short]
-             [--init] [--install]
+             [--init | --install | --uninstall]
 ```
 
 `--file` and `--workspaces` are mutually exclusive, as are `--no-amend` and `--separate-commit`. `--recursive` requires
 `--workspaces`. `--patch` is not supported with `--format pre` and must be a non-negative integer. `--no-skip-ci`
 explicitly overrides `skipOnCI` for a guarded CI workflow. Commit-producing modes require an empty index and clean
 generated manifests/lockfiles. `--verbose`, `--quiet`, and `--short` are mutually exclusive; an explicitly supplied
-CLI output mode replaces the configured mode. Dry-run summaries say files "would update" and never claim a write.
+CLI output mode replaces the configured mode. `--init`, `--install`, and `--uninstall` are mutually exclusive. Dry-run
+summaries say files "would update" and never claim a write.
 
 ## Config
 

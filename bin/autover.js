@@ -74,6 +74,7 @@ const defaultOptions = {
     patch: null,
     init: false,
     install: false,
+    uninstall: false,
     version: false,
     help: false,
     lockPath: null,
@@ -928,7 +929,7 @@ async function doInit(repoRoot) {
  * @return {Promise<void>}
  */
 async function doInstall(repoRoot) {
-    const customHooksPath = runGit(["config", "--get", "core.hooksPath"]);
+    const customHooksPath = runGit(["config", "--get", "core.hooksPath"], { cwd: repoRoot });
     const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
     const hooksDir = customHooksPath
         ? path.resolve(repoRoot, customHooksPath)
@@ -961,7 +962,7 @@ REM <<< autover managed block <<<`;
     };
     await updateHook(
         posixHookPath,
-        "#!/usr/bin/env bash\n",
+        "#!/usr/bin/env bash\n# autover-created-hook\n",
         posixBlock,
         "# >>> autover managed block >>>",
         "# <<< autover managed block <<<",
@@ -969,7 +970,7 @@ REM <<< autover managed block <<<`;
     await fsp.chmod(posixHookPath, 0o755);
     await updateHook(
         windowsHookPath,
-        "@echo off\r\n",
+        "@echo off\r\nREM autover-created-hook\r\n",
         windowsBlock,
         "REM >>> autover managed block >>>",
         "REM <<< autover managed block <<<",
@@ -978,6 +979,80 @@ REM <<< autover managed block <<<`;
     console.log(
         "autover: hooks use the locally installed package; use .autoverrc.json for settings.",
     );
+}
+
+/**
+ * Escape literal text for use in a regular expression.
+ *
+ * @method escapeRegExp
+ * @param {String} value Literal text.
+ * @return {String} Escaped expression source.
+ */
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * Remove an autover-managed block without disturbing user-owned hook content.
+ *
+ * @method removeManagedHookBlock
+ * @async
+ * @param {String} hookPath Absolute hook path.
+ * @param {String} start Managed block start marker.
+ * @param {String} end Managed block end marker.
+ * @param {String} ownedRemainder Exact content left when autover created the hook.
+ * @return {Promise<Boolean>} True when a managed block was removed.
+ */
+async function removeManagedHookBlock(hookPath, start, end, ownedRemainder) {
+    if (!fs.existsSync(hookPath)) {
+        return false;
+    }
+    const existing = await fsp.readFile(hookPath, "utf8");
+    const pattern = new RegExp(
+        `(?:\\r?\\n)?${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}(?:\\r?\\n)?`,
+        "u",
+    );
+    if (!pattern.test(existing)) {
+        return false;
+    }
+    const next = existing.replace(pattern, "");
+    if (next.trim() === ownedRemainder) {
+        await fsp.unlink(hookPath);
+    } else {
+        await fsp.writeFile(hookPath, next, "utf8");
+    }
+    return true;
+}
+
+/**
+ * Remove autover-managed POSIX and Windows post-commit hook blocks.
+ *
+ * @method doUninstall
+ * @async
+ * @param {String} repoRoot Repo root directory.
+ * @return {Promise<void>}
+ */
+async function doUninstall(repoRoot) {
+    const customHooksPath = runGit(["config", "--get", "core.hooksPath"], { cwd: repoRoot });
+    const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
+    const hooksDir = customHooksPath
+        ? path.resolve(repoRoot, customHooksPath)
+        : path.resolve(repoRoot, gitHooksPath || path.join(".git", "hooks"));
+    const removed = await Promise.all([
+        removeManagedHookBlock(
+            path.join(hooksDir, "post-commit"),
+            "# >>> autover managed block >>>",
+            "# <<< autover managed block <<<",
+            "#!/usr/bin/env bash\n# autover-created-hook",
+        ),
+        removeManagedHookBlock(
+            path.join(hooksDir, "post-commit.cmd"),
+            "REM >>> autover managed block >>>",
+            "REM <<< autover managed block <<<",
+            "@echo off\r\nREM autover-created-hook",
+        ),
+    ]);
+    console.log(`autover: removed managed blocks from ${removed.filter(Boolean).length} hook(s).`);
 }
 
 /**
@@ -1264,6 +1339,8 @@ function parseArgs(argv) {
             out.init = true;
         } else if (a === "--install") {
             out.install = true;
+        } else if (a === "--uninstall") {
+            out.uninstall = true;
         } else if (a === "-f" || a === "--file") {
             out.file = takeValue();
         } else if (a === "--workspaces") {
@@ -1314,6 +1391,13 @@ function parseArgs(argv) {
             process.exit(2);
         }
     }
+    const actions = ["init", "install", "uninstall"].filter((action) => out[action] === true);
+    if (actions.length > 1) {
+        console.error(
+            `autover: actions ${actions.map((action) => `--${action}`).join(", ")} are mutually exclusive`,
+        );
+        process.exit(2);
+    }
     return out;
 }
 
@@ -1333,7 +1417,8 @@ function printHelp() {
             "               [--format build|pre] [--patch N]",
             "               [--metadata timestamp|timestamp-sha]",
             "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run]",
-            "               [--no-skip-ci] [--verbose] [--quiet] [--short] [--init] [--install]",
+            "               [--no-skip-ci] [--verbose] [--quiet] [--short]",
+            "               [--init | --install | --uninstall]",
             "",
             "Examples:",
             "  npx autover",
@@ -1414,6 +1499,10 @@ async function main() {
     }
     if (args.install) {
         await doInstall(repoRoot);
+        return;
+    }
+    if (args.uninstall) {
+        await doUninstall(repoRoot);
         return;
     }
 
