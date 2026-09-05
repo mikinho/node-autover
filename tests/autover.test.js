@@ -264,6 +264,8 @@ describe("parseArgs", () => {
         assert.equal(parseArgs(["--init"]).init, true);
         assert.equal(parseArgs(["--install"]).install, true);
         assert.equal(parseArgs(["--uninstall"]).uninstall, true);
+        assert.equal(parseArgs(["--doctor"]).doctor, true);
+        assert.equal(parseArgs(["--unlock"]).unlock, true);
     });
 
     it("rejects conflicting management actions", () => {

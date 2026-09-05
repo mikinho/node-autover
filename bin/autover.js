@@ -37,9 +37,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,6 +61,12 @@ const GIT_PATH_BATCH_CHAR_LIMIT = 16_000;
 
 /** @const {number} OUTPUT_SCHEMA_VERSION Machine-readable result schema version. */
 const OUTPUT_SCHEMA_VERSION = 1;
+
+/** @const {number} LOCK_SCHEMA_VERSION Lock owner metadata schema version. */
+const LOCK_SCHEMA_VERSION = 1;
+
+/** @const {number} LOCKFILE_MAX_BYTES Maximum accepted lock metadata size. */
+const LOCKFILE_MAX_BYTES = 16 * 1024;
 
 /** @const {Object} defaultOptions */
 const defaultOptions = {
@@ -80,6 +88,8 @@ const defaultOptions = {
     init: false,
     install: false,
     uninstall: false,
+    doctor: false,
+    unlock: false,
     version: false,
     help: false,
     lockPath: null,
@@ -468,36 +478,112 @@ function lockPath(custom, repoRoot) {
 }
 
 /**
- * Atomically create a reentrancy lock file.
- * Returns true if the lock was acquired, false if it already existed.
+ * Atomically create a reentrancy lock file with owner metadata.
  *
  * @method acquireLock
  * @param {String} p Path to lock file.
- * @return {Boolean}
+ * @param {String} repoRoot Repository root.
+ * @return {{ownerId: String}|null} Owner identity, or null when already locked.
  */
-function acquireLock(p) {
+function acquireLock(p, repoRoot) {
+    const ownerId = randomUUID();
+    const metadata = {
+        schemaVersion: LOCK_SCHEMA_VERSION,
+        ownerId,
+        pid: process.pid,
+        hostname: os.hostname(),
+        createdAt: new Date().toISOString(),
+        repoRoot,
+    };
     try {
         fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, new Date().toISOString(), { flag: "wx" });
-        return true;
+        fs.writeFileSync(p, `${JSON.stringify(metadata)}\n`, { flag: "wx", mode: 0o600 });
+        return { ownerId };
     } catch (e) {
         if (e.code === "EEXIST") {
-            return false;
+            return null;
         }
         throw e;
     }
 }
 
 /**
- * Remove the reentrancy lock (ignore errors).
+ * Return true when an operating-system process still exists.
+ *
+ * @method processIsAlive
+ * @param {Number} pid Process identifier.
+ * @return {Boolean}
+ */
+function processIsAlive(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return error?.code === "EPERM";
+    }
+}
+
+/**
+ * Inspect lock ownership without mutating the lock.
+ *
+ * @method inspectLock
+ * @async
+ * @param {String} p Path to lock file.
+ * @param {String} repoRoot Expected repository root.
+ * @return {Promise<{status: String, metadata: Object|null}>} Lock status and validated metadata.
+ */
+async function inspectLock(p, repoRoot) {
+    let stat;
+    try {
+        stat = await fsp.lstat(p);
+    } catch (error) {
+        if (error?.code === "ENOENT") {
+            return { status: "absent", metadata: null };
+        }
+        throw error;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > LOCKFILE_MAX_BYTES) {
+        return { status: "unsafe", metadata: null };
+    }
+    const raw = await fsp.readFile(p, "utf8");
+    let metadata;
+    try {
+        metadata = JSON.parse(raw);
+    } catch {
+        return { status: "unknown", metadata: null };
+    }
+    if (
+        metadata?.schemaVersion !== LOCK_SCHEMA_VERSION ||
+        typeof metadata.ownerId !== "string" ||
+        !Number.isSafeInteger(metadata.pid) ||
+        metadata.pid <= 0 ||
+        typeof metadata.hostname !== "string" ||
+        typeof metadata.createdAt !== "string" ||
+        metadata.repoRoot !== repoRoot
+    ) {
+        return { status: "unknown", metadata: null };
+    }
+    if (metadata.hostname !== os.hostname()) {
+        return { status: "foreign", metadata };
+    }
+    return { status: processIsAlive(metadata.pid) ? "active" : "stale", metadata };
+}
+
+/**
+ * Remove a reentrancy lock only while it still belongs to this invocation.
  *
  * @method removeLock
  * @async
  * @param {String} p Path to lock file.
+ * @param {String} ownerId Invocation owner identity.
  * @return {Promise<void>}
  */
-async function removeLock(p) {
+async function removeLock(p, ownerId) {
     try {
+        const metadata = JSON.parse(await fsp.readFile(p, "utf8"));
+        if (metadata.ownerId !== ownerId) {
+            return;
+        }
         await fsp.unlink(p);
     } catch {
         // do nothing
@@ -928,6 +1014,21 @@ async function doInit(repoRoot) {
 }
 
 /**
+ * Resolve the effective Git hooks directory.
+ *
+ * @method resolveHooksDir
+ * @param {String} repoRoot Repo root.
+ * @return {String} Absolute hooks directory.
+ */
+function resolveHooksDir(repoRoot) {
+    const customHooksPath = runGit(["config", "--get", "core.hooksPath"], { cwd: repoRoot });
+    const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
+    return customHooksPath
+        ? path.resolve(repoRoot, customHooksPath)
+        : path.resolve(repoRoot, gitHooksPath || path.join(".git", "hooks"));
+}
+
+/**
  * Install managed POSIX and Windows post-commit hook blocks.
  *
  * @method doInstall
@@ -936,11 +1037,7 @@ async function doInit(repoRoot) {
  * @return {Promise<void>}
  */
 async function doInstall(repoRoot) {
-    const customHooksPath = runGit(["config", "--get", "core.hooksPath"], { cwd: repoRoot });
-    const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
-    const hooksDir = customHooksPath
-        ? path.resolve(repoRoot, customHooksPath)
-        : path.resolve(repoRoot, gitHooksPath || path.join(".git", "hooks"));
+    const hooksDir = resolveHooksDir(repoRoot);
     await fsp.mkdir(hooksDir, { recursive: true });
     const posixHookPath = path.join(hooksDir, "post-commit");
     const windowsHookPath = path.join(hooksDir, "post-commit.cmd");
@@ -1040,11 +1137,7 @@ async function removeManagedHookBlock(hookPath, start, end, ownedRemainder) {
  * @return {Promise<void>}
  */
 async function doUninstall(repoRoot) {
-    const customHooksPath = runGit(["config", "--get", "core.hooksPath"], { cwd: repoRoot });
-    const gitHooksPath = runGit(["rev-parse", "--git-path", "hooks"], { cwd: repoRoot });
-    const hooksDir = customHooksPath
-        ? path.resolve(repoRoot, customHooksPath)
-        : path.resolve(repoRoot, gitHooksPath || path.join(".git", "hooks"));
+    const hooksDir = resolveHooksDir(repoRoot);
     const removed = await Promise.all([
         removeManagedHookBlock(
             path.join(hooksDir, "post-commit"),
@@ -1060,6 +1153,130 @@ async function doUninstall(repoRoot) {
         ),
     ]);
     console.log(`autover: removed managed blocks from ${removed.filter(Boolean).length} hook(s).`);
+}
+
+/**
+ * Return lock details suitable for human or JSON diagnostics.
+ *
+ * @method publicLockDetails
+ * @param {String} lockFile Lock path.
+ * @param {{status: String, metadata: Object|null}} inspection Lock inspection.
+ * @return {Object} Sanitized lock details.
+ */
+function publicLockDetails(lockFile, inspection) {
+    const details = { path: lockFile, status: inspection.status };
+    if (inspection.metadata) {
+        details.owner = {
+            pid: inspection.metadata.pid,
+            hostname: inspection.metadata.hostname,
+            createdAt: inspection.metadata.createdAt,
+        };
+    }
+    return details;
+}
+
+/**
+ * Report runtime, repository, hook, and lock diagnostics without mutation.
+ *
+ * @method doDoctor
+ * @async
+ * @param {String} repoRoot Repository root.
+ * @param {Object} cfg Effective configuration.
+ * @param {String} gitVersionValue Detected Git version.
+ * @return {Promise<Boolean>} True when no lock condition needs attention.
+ */
+async function doDoctor(repoRoot, cfg, gitVersionValue) {
+    const lockFile = lockPath(cfg.lockPath, repoRoot);
+    const inspection = await inspectLock(lockFile, repoRoot);
+    const lock = publicLockDetails(lockFile, inspection);
+    const healthy = inspection.status === "absent" || inspection.status === "active";
+    if (cfg.json) {
+        console.log(
+            JSON.stringify({
+                schemaVersion: OUTPUT_SCHEMA_VERSION,
+                command: "doctor",
+                healthy,
+                repository: repoRoot,
+                nodeVersion: process.versions.node,
+                gitVersion: gitVersionValue,
+                config: path.join(repoRoot, ".autoverrc.json"),
+                hooks: resolveHooksDir(repoRoot),
+                lock,
+            }),
+        );
+        return healthy;
+    }
+    if (cfg.quiet) {
+        return healthy;
+    }
+    if (cfg.short) {
+        console.log(`autover: lock ${inspection.status} | ${lockFile}`);
+        return healthy;
+    }
+    console.log(
+        [
+            "autover doctor",
+            `repository = ${repoRoot}`,
+            `node       = ${process.versions.node}`,
+            `git        = ${gitVersionValue}`,
+            `config     = ${path.join(repoRoot, ".autoverrc.json")}`,
+            `hooks      = ${resolveHooksDir(repoRoot)}`,
+            `lock       = ${inspection.status} (${lockFile})`,
+        ].join("\n"),
+    );
+    return healthy;
+}
+
+/**
+ * Remove a stale lock only when same-host owner metadata proves its process ended.
+ *
+ * @method doUnlock
+ * @async
+ * @param {String} repoRoot Repository root.
+ * @param {Object} cfg Effective configuration.
+ * @return {Promise<Boolean>} True when the lock is absent after the operation.
+ */
+async function doUnlock(repoRoot, cfg) {
+    const lockFile = lockPath(cfg.lockPath, repoRoot);
+    const inspection = await inspectLock(lockFile, repoRoot);
+    let outcome = "absent";
+    let success = inspection.status === "absent";
+    if (inspection.status === "stale") {
+        const confirmed = await inspectLock(lockFile, repoRoot);
+        if (
+            confirmed.status === "stale" &&
+            confirmed.metadata?.ownerId === inspection.metadata?.ownerId
+        ) {
+            await fsp.unlink(lockFile);
+            outcome = "removed";
+            success = true;
+        }
+    }
+    if (!success) {
+        outcome = "refused";
+    }
+    if (cfg.json) {
+        console.log(
+            JSON.stringify({
+                schemaVersion: OUTPUT_SCHEMA_VERSION,
+                command: "unlock",
+                outcome,
+                lock: publicLockDetails(lockFile, inspection),
+            }),
+        );
+    } else if (!cfg.quiet) {
+        if (outcome === "removed") {
+            console.log(`autover: removed stale lock ${lockFile}`);
+        } else if (outcome === "absent") {
+            console.log(`autover: no lock present at ${lockFile}`);
+        }
+    }
+    if (!success) {
+        console.error(
+            `autover: refusing to remove ${inspection.status} lock ${lockFile}; verify the owner before manual recovery`,
+        );
+    }
+    return success;
 }
 
 /**
@@ -1447,6 +1664,10 @@ function parseArgs(argv) {
             out.install = true;
         } else if (a === "--uninstall") {
             out.uninstall = true;
+        } else if (a === "--doctor") {
+            out.doctor = true;
+        } else if (a === "--unlock") {
+            out.unlock = true;
         } else if (a === "-f" || a === "--file") {
             out.file = takeValue();
         } else if (a === "--workspaces") {
@@ -1501,7 +1722,9 @@ function parseArgs(argv) {
             process.exit(2);
         }
     }
-    const actions = ["init", "install", "uninstall"].filter((action) => out[action] === true);
+    const actions = ["init", "install", "uninstall", "doctor", "unlock"].filter(
+        (action) => out[action] === true,
+    );
     if (actions.length > 1) {
         console.error(
             `autover: actions ${actions.map((action) => `--${action}`).join(", ")} are mutually exclusive`,
@@ -1536,7 +1759,7 @@ function printHelp() {
             "               [--metadata timestamp|timestamp-sha]",
             "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]",
             "               [--no-skip-ci] [--verbose | --quiet | --short | --json]",
-            "               [--init | --install | --uninstall]",
+            "               [--init | --install | --uninstall | --doctor | --unlock]",
             "",
             "Examples:",
             "  npx autover",
@@ -1641,14 +1864,50 @@ async function main() {
         cfg.separateCommit = false;
         cfg.skipOnCI = false;
     }
+    if (cfg.doctor) {
+        try {
+            const healthy = await doDoctor(repoRoot, cfg, gv);
+            process.exitCode = healthy ? 0 : 1;
+        } catch (error) {
+            console.error(`autover: doctor failed: ${error.message}`);
+            process.exitCode = 1;
+        }
+        return;
+    }
+    if (cfg.unlock) {
+        try {
+            const unlocked = await doUnlock(repoRoot, cfg);
+            process.exitCode = unlocked ? 0 : 1;
+        } catch (error) {
+            console.error(`autover: unlock failed: ${error.message}`);
+            process.exitCode = 1;
+        }
+        return;
+    }
 
     // Global reentrancy guard (atomic: O_CREAT|O_EXCL)
     const lk = cfg.dryRun ? null : lockPath(cfg.lockPath, repoRoot);
-    if (lk && !acquireLock(lk)) {
-        printJsonSkip(cfg, "lock-present");
-        if (!cfg.quiet && (cfg.short || cfg.verbose)) {
-            console.log("autover: lock present; exiting.");
+    const lockOwner = lk ? acquireLock(lk, repoRoot) : null;
+    if (lk && !lockOwner) {
+        let inspection;
+        try {
+            inspection = await inspectLock(lk, repoRoot);
+        } catch (error) {
+            console.error(`autover: unable to inspect lock ${lk}: ${error.message}`);
+            process.exitCode = 1;
+            return;
         }
+        if (inspection.status === "active" || inspection.status === "foreign") {
+            printJsonSkip(cfg, `lock-${inspection.status}`);
+            if (!cfg.quiet && (cfg.short || cfg.verbose)) {
+                console.log(`autover: ${inspection.status} lock present; exiting.`);
+            }
+            return;
+        }
+        console.error(
+            `autover: ${inspection.status} lock present at ${lk}; run autover --doctor and autover --unlock before retrying`,
+        );
+        process.exitCode = 1;
         return;
     }
     try {
@@ -2026,8 +2285,8 @@ async function main() {
             console.log(`${"changed".padEnd(13)} = ${changedFiles.length} file(s)`);
         }
     } finally {
-        if (lk) {
-            await removeLock(lk);
+        if (lk && lockOwner) {
+            await removeLock(lk, lockOwner.ownerId);
         }
     }
 }

@@ -56,6 +56,9 @@ npx autover --install
 # remove only autover-managed hook blocks
 npx autover --uninstall
 
+# inspect runtime, hooks, and lock ownership
+npx autover --doctor
+
 # preview one-liner
 npx autover --no-amend --dry-run --short
 
@@ -85,7 +88,7 @@ npx autover [--file PATH | --workspaces [--recursive]]
              [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]
              [--no-skip-ci]
              [--verbose | --quiet | --short | --json]
-             [--init | --install | --uninstall]
+             [--init | --install | --uninstall | --doctor | --unlock]
 ```
 
 `--file` and `--workspaces` are mutually exclusive, as are `--no-amend` and `--separate-commit`. `--recursive` requires
@@ -93,8 +96,8 @@ npx autover [--file PATH | --workspaces [--recursive]]
 explicitly overrides `skipOnCI` for a guarded CI workflow. Commit-producing modes require an empty index and clean
 generated manifests/lockfiles. `--check` never writes, ignores `skipOnCI`, and exits `3` when updates are required.
 `--verbose`, `--quiet`, `--short`, and `--json` are mutually exclusive; an explicitly supplied CLI output mode replaces
-the configured mode. `--init`, `--install`, and `--uninstall` are mutually exclusive. Dry-run summaries say files
-"would update" and never claim a write.
+the configured mode. `--init`, `--install`, `--uninstall`, `--doctor`, and `--unlock` are mutually exclusive. Dry-run
+summaries say files "would update" and never claim a write.
 
 ## Config
 
@@ -125,7 +128,8 @@ Configuration is schema-validated and fails closed. Unknown keys, malformed JSON
 
 ### Machine-readable output
 
-`--json` emits exactly one compact JSON document on stdout for a successfully planned, applied, or skipped invocation.
+`--json` emits exactly one compact JSON document on stdout for a successfully planned, applied, skipped, diagnostic, or
+unlock invocation.
 Schema version `1` contains `mode`, `outcome`, `applied`, normalized repository-relative `files`, and package `from`/`to`
 versions. Its `lockfiles` entries identify the package versions synchronized into each lockfile. Planned results also
 identify the triggering commit. Consumers should reject unknown schema versions, require documented fields, and
@@ -151,14 +155,24 @@ without force-pushing commits or tags.
 
 ## Troubleshooting
 
-If autover silently does nothing on every commit, a stale lock file is the most likely cause. This can happen if a
-previous run was interrupted before cleanup. Delete the lock file to recover:
+Autover lock files record a schema version, unique owner, process ID, hostname, creation time, and repository identity.
+An active same-host or foreign-host lock remains a successful reentrancy skip. A stale, malformed, or unsafe lock fails
+with an actionable diagnostic instead of silently disabling versioning.
+
+Inspect the effective runtime, hook path, and lock owner first:
 
 ```bash
-rm .git/autover.lock
+npx autover --doctor
 ```
 
-Or the path configured via `lockPath` in `.autoverrc.json`.
+When the recorded owner is on this host and its process has ended, remove it safely:
+
+```bash
+npx autover --unlock
+```
+
+`--unlock` refuses active, foreign-host, malformed legacy, mismatched-repository, symlink, and non-file locks. Manual
+recovery of one of those cases requires independently verifying the owner and the path configured by `lockPath`.
 
 ## Development
 

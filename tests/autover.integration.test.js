@@ -456,6 +456,75 @@ describe("autover Git integration", () => {
         assert.equal(fs.existsSync(path.join(hooksDir, "post-commit.cmd")), false);
     });
 
+    it("diagnoses active locks and refuses to remove them", (t) => {
+        const { repo, git, run } = fixture(t);
+        const lockFile = path.join(repo, ".git", "autover.lock");
+        const canonicalRepo = git("rev-parse", "--show-toplevel");
+        fs.writeFileSync(
+            lockFile,
+            `${JSON.stringify({
+                schemaVersion: 1,
+                ownerId: "active-test-owner",
+                pid: process.pid,
+                hostname: os.hostname(),
+                createdAt: new Date().toISOString(),
+                repoRoot: canonicalRepo,
+            })}\n`,
+            { mode: 0o600 },
+        );
+
+        const doctor = run("--doctor", "--json");
+        assert.equal(doctor.status, 0, doctor.stderr);
+        assert.equal(JSON.parse(doctor.stdout).lock.status, "active");
+        const nested = run("--short");
+        assert.equal(nested.status, 0, nested.stderr);
+        assert.match(nested.stdout, /active lock present/u);
+        const unlock = run("--unlock");
+        assert.equal(unlock.status, 1);
+        assert.match(unlock.stderr, /refusing to remove active lock/u);
+        assert.equal(fs.existsSync(lockFile), true);
+    });
+
+    it("removes stale locks only after validating owner metadata", (t) => {
+        const { repo, git, run } = fixture(t);
+        const lockFile = path.join(repo, ".git", "autover.lock");
+        const canonicalRepo = git("rev-parse", "--show-toplevel");
+        fs.writeFileSync(
+            lockFile,
+            `${JSON.stringify({
+                schemaVersion: 1,
+                ownerId: "stale-test-owner",
+                pid: 2_147_483_647,
+                hostname: os.hostname(),
+                createdAt: "2026-01-01T00:00:00.000Z",
+                repoRoot: canonicalRepo,
+            })}\n`,
+            { mode: 0o600 },
+        );
+
+        const doctor = run("--doctor", "--json");
+        assert.equal(doctor.status, 1);
+        assert.equal(JSON.parse(doctor.stdout).lock.status, "stale");
+        const unlock = run("--unlock", "--json");
+        assert.equal(unlock.status, 0, unlock.stderr);
+        assert.equal(JSON.parse(unlock.stdout).outcome, "removed");
+        assert.equal(fs.existsSync(lockFile), false);
+    });
+
+    it("refuses to remove legacy locks without verifiable ownership", (t) => {
+        const { repo, run } = fixture(t);
+        const lockFile = path.join(repo, ".git", "autover.lock");
+        fs.writeFileSync(lockFile, "2026-01-01T00:00:00.000Z\n", { mode: 0o600 });
+
+        const doctor = run("--doctor", "--json");
+        assert.equal(doctor.status, 1);
+        assert.equal(JSON.parse(doctor.stdout).lock.status, "unknown");
+        const unlock = run("--unlock");
+        assert.equal(unlock.status, 1);
+        assert.match(unlock.stderr, /refusing to remove unknown lock/u);
+        assert.equal(fs.existsSync(lockFile), true);
+    });
+
     it("restores files and index when a generated commit fails", (t) => {
         const { repo, git } = fixture(t);
         const packagePath = path.join(repo, "package.json");
