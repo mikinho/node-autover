@@ -1,20 +1,21 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { describe, it } from "node:test";
+
 import {
-    parseMMP,
+    expandWorkspaceGlobs,
+    fromGitEpoch,
+    isoZ,
     makeVersionBuild,
     makeVersionPre,
     minutesSinceYearStart,
     parseArgs,
-    versionTuple,
-    isoZ,
-    fromGitEpoch,
+    parseMMP,
     shortCommitId,
-    expandWorkspaceGlobs,
+    versionTuple,
 } from "../bin/autover.js";
 
 /* ------------------------------------------------------------------ */

@@ -23,54 +23,79 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-import { defineConfig } from "eslint/config";
-import globals from "globals";
+import { builtinModules } from "node:module";
+
 import js from "@eslint/js";
 import json from "@eslint/json";
 import markdown from "@eslint/markdown";
+import { defineConfig } from "eslint/config";
 import eslintConfigPrettier from "eslint-config-prettier";
-import pluginPrettier from "eslint-plugin-prettier";
+import simpleImportSort from "eslint-plugin-simple-import-sort";
+import globals from "globals";
 
 export default defineConfig([
+    // Global ignores: an object with only `ignores` applies to every config block.
     {
-        ignores: ["**/node_modules/**", "**/*.min.js", "**/package-lock.json", "**/docs/**"],
+        ignores: [
+            "CHANGELOG.md",
+            "**/node_modules/**",
+            "**/*.min.js",
+            "**/package-lock.json",
+            "**/docs/**",
+        ],
+    },
+    {
         linterOptions: { reportUnusedDisableDirectives: true },
     },
     {
         files: ["**/*.{js,mjs,cjs}"],
-        ignores: ["**/node_modules/**", "**/*.min.js", "**/package-lock.json", "**/docs/**"],
-        plugins: { js, prettier: pluginPrettier },
+        plugins: { js, "simple-import-sort": simpleImportSort },
         extends: ["js/recommended"],
         languageOptions: {
             globals: { ...globals.node, ...globals.es2024 },
         },
         rules: {
+            eqeqeq: ["error", "always"],
+            "no-else-return": ["error", { allowElseIf: false }],
             "no-var": "error",
             "prefer-const": ["error", { destructuring: "all" }],
             "no-unused-vars": ["error", { args: "none", ignoreRestSiblings: true }],
             "no-implicit-coercion": ["warn", { allow: ["!!"] }],
-            "no-console": ["warn", { allow: ["log", "warn", "error"] }],
-            // "array-bracket-spacing": ["error", "always"], // conflicts with prettier
-            indent: ["error", 4, { SwitchCase: 1 }],
-            semi: ["error", "always"],
-            curly: ["error", "all"],
-            "brace-style": ["error", "1tbs", { allowSingleLine: false }],
-            quotes: ["error", "double", { avoidEscape: true, allowTemplateLiterals: true }],
+            "simple-import-sort/imports": [
+                "error",
+                {
+                    groups: [
+                        ["^\\u0000"],
+                        [`^node:(?!test$)`, `^node:test$`, `^(${builtinModules.join("|")})(/|$)`],
+                        ["^@?\\w"],
+                        ["^.*core(/|$)"],
+                        ["^\\."],
+                    ],
+                },
+            ],
+            "simple-import-sort/exports": "error",
         },
     },
     {
         files: ["**/*.json"],
-        ignores: ["**/node_modules/**", "**/*.min.js", "**/package-lock.json", "**/docs/**"],
         plugins: { json },
         language: "json/json",
         extends: ["json/recommended"],
     },
     {
         files: ["**/*.md"],
-        ignores: ["**/node_modules/**", "**/docs/**"],
         plugins: { markdown },
         language: "markdown/gfm",
         extends: ["markdown/recommended"],
     },
+    // Put this LAST to disable rules that conflict with Prettier formatting.
     eslintConfigPrettier,
+    {
+        // eslint-config-prettier disables `curly`, but brace presence is code
+        // structure that Prettier does not manage.
+        files: ["**/*.{js,mjs,cjs}"],
+        rules: {
+            curly: ["error", "all"],
+        },
+    },
 ]);

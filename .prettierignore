@@ -1,4 +1,5 @@
 node_modules
+CHANGELOG.md
 dist
 build
 docs

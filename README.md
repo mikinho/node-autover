@@ -11,6 +11,15 @@ projects can instead request a separate, marked version commit. Autover is works
 npm lockfiles, and uses a reentrancy lock to prevent recursive hook loops. Because it runs as a post-commit hook with
 write access to your history, autover ships with zero runtime dependencies: one file, built entirely on Node.js builtins.
 
+## Supported Environments
+
+- Node.js 20.19.0 or newer. Node.js 22 and 24 are recommended; Node.js 20.19 remains supported through the current major release for compatibility.
+- Git 1.8.2 or newer for repository operations.
+- Linux and Windows are exercised in CI, including installation of the packed command at the exact Node.js minimum. Maintainer validation also covers macOS.
+- npm supplies the installed `autover` launcher and is required for hook installation through `npx --no-install`.
+
+The package is ESM and exposes a command, not a supported JavaScript import entry point.
+
 ## Features
 
 - **Timestamp Metadata (default):** `X.Y.Z+<minutesSinceJan1UTC>`.
@@ -135,13 +144,19 @@ Or the path configured via `lockPath` in `.autoverrc.json`.
 
 ```bash
 # install dev dependencies (autover itself has none)
-npm install
+npm ci
 
 # run unit tests (node:test, zero external deps)
 npm run test:unit
 
 # lint
 npm run lint
+
+# JSDoc-aware implementation type check
+npm run typecheck
+
+# validate the exact packed files and installed CLI
+npm run test:package
 
 # generate JSDoc documentation locally
 npm run docs
@@ -153,9 +168,13 @@ npm run docs:clean
 
 ## Release
 
-Use `make release VERSION=patch|minor|major` to publish a clean SemVer to npm. The release helper sets
-`AUTOVER_SKIP=1` around `npm version`, preventing the post-commit hook from adding development metadata to the release
-commit. `AUTOVER_SKIP=1` can also suppress autover explicitly for other controlled Git operations.
+From a clean, synchronized `main`, use `make release-patch`, `make release-minor`, or `make release-major`. The helper runs the publication gates and creates a signed, signed-off release commit plus a matching signed annotated tag; it does not push or publish. Review the result, then run `git push --follow-tags`.
+
+The tag-only release workflow verifies the tag and its `main` ancestry, tests and packs the exact artifact, then publishes that same tarball through npm trusted publishing with provenance. `AUTOVER_SKIP=1` suppresses development metadata during the controlled release commit and can also be used for other deliberate Git operations.
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do not disclose an unpatched vulnerability in a public issue.
 
 ## License
 

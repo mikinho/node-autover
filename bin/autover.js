@@ -36,11 +36,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * @since 2.0.0
  */
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const _require = createRequire(import.meta.url);
@@ -280,7 +280,7 @@ function fromGitEpoch(ts) {
  * @method readJSON
  * @async
  * @param {String} p Absolute path to JSON file.
- * @return {Object} Parsed JSON object.
+ * @return {Promise<Object>} Parsed JSON object.
  */
 async function readJSON(p) {
     const raw = await fsp.readFile(p, "utf8");
@@ -301,7 +301,7 @@ async function readJSON(p) {
  * @async
  * @param {String} p Absolute path to JSON file.
  * @param {Object} data JSON-serializable object.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function atomicWriteJSON(p, data) {
     const dir = path.dirname(p);
@@ -485,7 +485,7 @@ function acquireLock(p) {
  * @method removeLock
  * @async
  * @param {String} p Path to lock file.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function removeLock(p) {
     try {
@@ -721,7 +721,7 @@ function expandWorkspaceGlobs(patterns, cwd) {
  * @method detectWorkspaceFiles
  * @async
  * @param {String} repoRoot Repo root.
- * @return {Set<String>|null} Set of absolute package.json paths, empty Set, or null if not defined.
+ * @return {Promise<Set<String>|null>} Set of absolute package.json paths, empty Set, or null if not defined.
  */
 async function detectWorkspaceFiles(repoRoot) {
     const rootPkg = path.join(repoRoot, "package.json");
@@ -823,7 +823,7 @@ function subtreeHasStaged(packageJsonPath, stagedAbs) {
  * @method loadConfig
  * @async
  * @param {String} repoRoot Repo root.
- * @return {Object} Parsed config or empty object.
+ * @return {Promise<Object>} Parsed config or empty object.
  */
 async function loadConfig(repoRoot) {
     const p = path.join(repoRoot, ".autoverrc.json");
@@ -882,7 +882,7 @@ function validateConfig(config) {
  * @method doInit
  * @async
  * @param {String} repoRoot Repo root.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function doInit(repoRoot) {
     const p = path.join(repoRoot, ".autoverrc.json");
@@ -916,7 +916,7 @@ async function doInit(repoRoot) {
  * @method doInstall
  * @async
  * @param {String} repoRoot Repo root.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function doInstall(repoRoot) {
     const customHooksPath = runGit(["config", "--get", "core.hooksPath"]);
@@ -979,7 +979,7 @@ REM <<< autover managed block <<<`;
  * @param {Array<String>} filesToAdd Absolute file paths to stage.
  * @param {Object} opts Options.
  * @param {Boolean} opts.verbose Verbose logging.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function stageAndAmend(filesToAdd, { verbose }) {
     if (!filesToAdd.length) {
@@ -1021,7 +1021,7 @@ async function stageAndAmend(filesToAdd, { verbose }) {
  * @param {Array<String>} filesToAdd Absolute file paths to stage.
  * @param {Object} opts Options.
  * @param {Boolean} opts.verbose Verbose logging.
- * @return {void}
+ * @return {Promise<void>}
  */
 async function stageAndCommit(filesToAdd, { verbose }) {
     if (!filesToAdd.length) {
@@ -1048,7 +1048,8 @@ async function stageAndCommit(filesToAdd, { verbose }) {
     const res = spawnSync("git", args, { encoding: "utf8" });
     if (res.status !== 0) {
         throw new Error("version commit failed");
-    } else if (verbose) {
+    }
+    if (verbose) {
         console.log("autover: created a separate version commit.");
     }
 }
@@ -1062,7 +1063,7 @@ async function stageAndCommit(filesToAdd, { verbose }) {
  * @param {String} packageJsonPath Package manifest path.
  * @param {String} version Generated version.
  * @param {Boolean} dryRun Whether writes are disabled.
- * @return {String|null} Changed lockfile path, or null.
+ * @return {Promise<String|null>} Changed lockfile path, or null.
  */
 async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
     const packageDir = path.dirname(packageJsonPath);
@@ -1110,14 +1111,11 @@ async function syncLockfileVersion(repoRoot, packageJsonPath, version, dryRun) {
 }
 
 /**
- * Optionally create/update a lightweight tag like `vX.Y.Z` when changes occur.
+ * Verify that a lightweight release tag does not already exist.
  *
- * @method maybeTag
- * @param {Boolean} tagOnChange Whether to tag.
+ * @method assertTagAvailable
  * @param {String} version Version string (build or pre-release).
- * @param {Boolean} changed True if files changed.
- * @param {Boolean} verbose Verbose logging.
- * @return {void}
+ * @return {Boolean} True when the tag is available.
  */
 function assertTagAvailable(version) {
     const core = version.split("+", 1)[0].split("-", 1)[0];
@@ -1129,6 +1127,16 @@ function assertTagAvailable(version) {
     return true;
 }
 
+/**
+ * Optionally create a lightweight tag like `vX.Y.Z` when changes occur.
+ *
+ * @method maybeTag
+ * @param {Boolean} tagOnChange Whether to tag.
+ * @param {String} version Version string (build or pre-release).
+ * @param {Boolean} changed True if files changed.
+ * @param {Boolean} verbose Verbose logging.
+ * @return {void}
+ */
 function maybeTag(tagOnChange, version, changed, verbose) {
     if (!tagOnChange || !changed) {
         return;
@@ -1158,7 +1166,7 @@ function parseArgs(argv) {
         const a = argv[i];
         const takeValue = () => {
             const value = argv[i + 1];
-            if (value == null || value.startsWith("-")) {
+            if (value === undefined || value === null || value.startsWith("-")) {
                 console.error(`autover: ${a} requires a value`);
                 process.exit(2);
             }
@@ -1256,16 +1264,16 @@ function printHelp() {
 /* ------------------------------------------------------------------------ */
 
 export {
-    parseMMP,
+    expandWorkspaceGlobs,
+    fromGitEpoch,
+    isoZ,
     makeVersionBuild,
     makeVersionPre,
     minutesSinceYearStart,
     parseArgs,
-    versionTuple,
-    isoZ,
-    fromGitEpoch,
+    parseMMP,
     shortCommitId,
-    expandWorkspaceGlobs,
+    versionTuple,
 };
 
 let _isDirectRun = false;
@@ -1283,7 +1291,7 @@ try {
  * @method main
  * @async
  * @private
- * @return {void}
+ * @return {Promise<void>}
  */
 async function main() {
     const args = parseArgs(process.argv.slice(2));
@@ -1367,7 +1375,7 @@ async function main() {
         const skipOnCI = cfg.skipOnCI;
         const tagOnChange = cfg.tagOnChange;
 
-        if (cfg.patch != null) {
+        if (cfg.patch !== undefined && cfg.patch !== null) {
             const n = Number(cfg.patch);
             if (!Number.isInteger(n) || n < 0) {
                 console.error("autover: patch must be a non-negative integer");
@@ -1391,7 +1399,7 @@ async function main() {
             process.exitCode = 2;
             return;
         }
-        if (cfg.format === "pre" && cfg.patch != null) {
+        if (cfg.format === "pre" && cfg.patch !== undefined && cfg.patch !== null) {
             console.error("autover: --patch is not supported with --format pre");
             process.exitCode = 2;
             return;
