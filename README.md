@@ -116,7 +116,6 @@ summaries say files "would update" and never claim a write.
     "quiet": false,
     "json": false,
     "rootAlso": true,
-    "tagOnChange": false,
     "lockPath": ".git/autover.lock",
     "patch": null,
     "verbose": false
@@ -125,6 +124,12 @@ summaries say files "would update" and never claim a write.
 
 Configuration is schema-validated and fails closed. Unknown keys, malformed JSON, incorrect value types, and invalid
 `format`, `metadata`, or `patch` values exit with code 2.
+
+## Migration to v4
+
+`tagOnChange` has been removed. Generated build versions no longer create lightweight `vX.Y.Z` tags because build
+metadata is stripped from those tag names and subsequent commits collide with the first tag. Remove the key from
+`.autoverrc.json`; create release tags through the documented signed release process instead.
 
 ### Machine-readable output
 

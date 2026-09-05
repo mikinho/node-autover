@@ -225,10 +225,6 @@ describe("autover Git integration", () => {
 
     it("does not write files or tags during dry-run", (t) => {
         const { repo, git, run } = fixture(t);
-        fs.writeFileSync(
-            path.join(repo, ".autoverrc.json"),
-            `${JSON.stringify({ tagOnChange: true }, null, 4)}\n`,
-        );
         const before = fs.readFileSync(path.join(repo, "package.json"), "utf8");
         const result = run("--dry-run", "--no-amend", "--short");
         assert.equal(result.status, 0, result.stderr);
@@ -237,6 +233,17 @@ describe("autover Git integration", () => {
         assert.equal(fs.readFileSync(path.join(repo, "package.json"), "utf8"), before);
         assert.equal(git("tag", "--list"), "");
         assert.equal(fs.existsSync(path.join(repo, ".git", "autover.lock")), false);
+    });
+
+    it("rejects the removed tagOnChange configuration key", (t) => {
+        const { repo, run } = fixture(t);
+        fs.writeFileSync(
+            path.join(repo, ".autoverrc.json"),
+            `${JSON.stringify({ tagOnChange: false }, null, 4)}\n`,
+        );
+        const result = run("--dry-run", "--no-amend");
+        assert.equal(result.status, 2);
+        assert.match(result.stderr, /unknown configuration key "tagOnChange"/u);
     });
 
     it("reports version drift as schema-versioned JSON without writing", (t) => {
@@ -592,33 +599,6 @@ describe("autover Git integration", () => {
         assert.equal(result.status, 0, result.stderr);
         assert.match(git("show", "-s", "--format=%B", "HEAD"), /^Autover-Version: true$/mu);
         assert.match(git("cat-file", "-p", "HEAD"), /^gpgsig /mu);
-    });
-
-    it("rejects an existing release tag before writing", (t) => {
-        const { repo, git, run } = fixture(t);
-        git("tag", "v1.0.0");
-        fs.writeFileSync(
-            path.join(repo, ".autoverrc.json"),
-            `${JSON.stringify({ tagOnChange: true }, null, 4)}\n`,
-        );
-        const before = fs.readFileSync(path.join(repo, "package.json"), "utf8");
-        const result = run();
-        assert.equal(result.status, 1);
-        assert.match(result.stderr, /tag v1\.0\.0 already exists/u);
-        assert.equal(fs.readFileSync(path.join(repo, "package.json"), "utf8"), before);
-    });
-
-    it("rejects tag creation with no-amend mode", (t) => {
-        const { repo, run } = fixture(t);
-        fs.writeFileSync(
-            path.join(repo, ".autoverrc.json"),
-            `${JSON.stringify({ tagOnChange: true }, null, 4)}\n`,
-        );
-        const before = fs.readFileSync(path.join(repo, "package.json"), "utf8");
-        const result = run("--no-amend");
-        assert.equal(result.status, 2);
-        assert.match(result.stderr, /tagOnChange cannot be used with --no-amend/u);
-        assert.equal(fs.readFileSync(path.join(repo, "package.json"), "utf8"), before);
     });
 
     it("validates lockfiles before writing package manifests", (t) => {

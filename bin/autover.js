@@ -95,7 +95,6 @@ const defaultOptions = {
     lockPath: null,
     rootAlso: false,
     skipOnCI: false,
-    tagOnChange: false,
 };
 
 /**
@@ -959,7 +958,6 @@ function validateConfig(config) {
         lockPath: ["string", "null"],
         rootAlso: ["boolean"],
         skipOnCI: ["boolean"],
-        tagOnChange: ["boolean"],
     };
     for (const [key, value] of Object.entries(config)) {
         if (!(key in types)) {
@@ -1004,7 +1002,6 @@ async function doInit(repoRoot) {
         quiet: false,
         json: false,
         rootAlso: true,
-        tagOnChange: false,
         lockPath: ".git/autover.lock",
         patch: null,
         verbose: false,
@@ -1486,49 +1483,6 @@ async function planLockfileUpdates(repoRoot, packagePlans) {
 }
 
 /**
- * Verify that a lightweight release tag does not already exist.
- *
- * @method assertTagAvailable
- * @param {String} version Version string (build or pre-release).
- * @return {Boolean} True when the tag is available.
- */
-function assertTagAvailable(version) {
-    const core = version.split("+", 1)[0].split("-", 1)[0];
-    const tag = `v${core}`;
-    const existing = runGit(["rev-parse", "-q", "--verify", `refs/tags/${tag}^{}`]);
-    if (existing) {
-        throw new Error(`tag ${tag} already exists`);
-    }
-    return true;
-}
-
-/**
- * Optionally create a lightweight tag like `vX.Y.Z` when changes occur.
- *
- * @method maybeTag
- * @param {Boolean} tagOnChange Whether to tag.
- * @param {String} version Version string (build or pre-release).
- * @param {Boolean} changed True if files changed.
- * @param {Boolean} verbose Verbose logging.
- * @return {void}
- */
-function maybeTag(tagOnChange, version, changed, verbose) {
-    if (!tagOnChange || !changed) {
-        return;
-    }
-    assertTagAvailable(version);
-    const core = version.split("+", 1)[0].split("-", 1)[0];
-    const tag = `v${core}`;
-    const res = spawnSync("git", ["tag", tag], { encoding: "utf8" });
-    if (res.status !== 0) {
-        throw new Error(`failed to create tag ${tag}`);
-    }
-    if (verbose) {
-        console.log(`autover: tagged ${tag}`);
-    }
-}
-
-/**
  * Return the public execution-mode name for machine output.
  *
  * @method executionMode
@@ -1929,7 +1883,6 @@ async function main() {
         }
         const rootAlso = cfg.rootAlso;
         const skipOnCI = cfg.skipOnCI;
-        const tagOnChange = cfg.tagOnChange;
 
         if (cfg.patch !== undefined && cfg.patch !== null) {
             const n = Number(cfg.patch);
@@ -1965,11 +1918,6 @@ async function main() {
             console.error(
                 "autover: SHA-bearing versions require --separate-commit or --no-amend; amend mode cannot preserve the embedded SHA",
             );
-            process.exitCode = 2;
-            return;
-        }
-        if (tagOnChange && cfg.noAmend && !cfg.dryRun) {
-            console.error("autover: tagOnChange cannot be used with --no-amend");
             process.exitCode = 2;
             return;
         }
@@ -2131,16 +2079,6 @@ async function main() {
             process.exitCode = 2;
             return;
         }
-        if (!cfg.dryRun && tagOnChange && firstChangedVersion) {
-            try {
-                assertTagAvailable(firstChangedVersion);
-            } catch (error) {
-                console.error(`autover: ${error.message}; no files changed.`);
-                process.exitCode = 1;
-                return;
-            }
-        }
-
         const snapshotPaths = Array.from(
             new Set([...plans.map((plan) => plan.packageJsonPath), ...lockfilePlans.keys()]),
         );
@@ -2244,16 +2182,6 @@ async function main() {
             }
             process.exitCode = 4;
             return;
-        }
-
-        if (firstChangedVersion && !cfg.dryRun) {
-            try {
-                maybeTag(tagOnChange, firstChangedVersion, changedFiles.length > 0, cfg.verbose);
-            } catch (error) {
-                console.error(`autover: ${error.message}`);
-                process.exitCode = 1;
-                return;
-            }
         }
 
         if (cfg.json) {
