@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 
 const _require = createRequire(import.meta.url);
 /** @const {string} SCRIPT_VERSION */
-const SCRIPT_VERSION = _require("../package.json").version.split("+")[0];
+const SCRIPT_VERSION = _require("../package.json").version;
 const jsonFormatting = new WeakMap();
 
 /** @const {string} LOCKFILE_DEFAULT */

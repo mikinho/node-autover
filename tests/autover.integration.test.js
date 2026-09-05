@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const cli = path.resolve("bin/autover.js");
+const packageVersion = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;
 
 function fixture(t, { workspaces = false } = {}) {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "autover-integration-"));
@@ -77,7 +78,7 @@ describe("autover Git integration", () => {
             encoding: "utf8",
         });
         assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, /^autover \d+\.\d+\.\d+/u);
+        assert.equal(result.stdout.trim(), `autover ${packageVersion}`);
     });
 
     it("supports explicit suppression for clean release commits", (t) => {
