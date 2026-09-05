@@ -5,9 +5,8 @@
     "workspaces": false,
     "guardUnchanged": true,
     "skipOnCI": true,
-    "short": true,
+    "output": "short",
     "rootAlso": true,
     "lockPath": ".git/autover.lock",
-    "patch": null,
-    "verbose": false
+    "patch": null
 }

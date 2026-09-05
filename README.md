@@ -86,7 +86,7 @@ npx autover [--file PATH | --workspaces [--recursive]]
              [--format build|pre] [--patch N]
              [--metadata timestamp|timestamp-sha]
              [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]
-             [--no-skip-ci]
+             [--no-skip-ci] [--output normal|verbose|quiet|short|json]
              [--verbose | --quiet | --short | --json]
              [--init | --install | --uninstall | --doctor | --unlock]
 ```
@@ -95,9 +95,10 @@ npx autover [--file PATH | --workspaces [--recursive]]
 `--workspaces`. `--patch` is not supported with `--format pre` and must be a non-negative integer. `--no-skip-ci`
 explicitly overrides `skipOnCI` for a guarded CI workflow. Commit-producing modes require an empty index and clean
 generated manifests/lockfiles. `--check` never writes, ignores `skipOnCI`, and exits `3` when updates are required.
-`--verbose`, `--quiet`, `--short`, and `--json` are mutually exclusive; an explicitly supplied CLI output mode replaces
-the configured mode. `--init`, `--install`, `--uninstall`, `--doctor`, and `--unlock` are mutually exclusive. Dry-run
-summaries say files "would update" and never claim a write.
+`--output` selects one output mode and overrides the configured mode. `--verbose`, `--quiet`, `--short`, and `--json`
+remain CLI aliases for their corresponding modes and cannot be combined with a different mode. `--init`, `--install`,
+`--uninstall`, `--doctor`, and `--unlock` are mutually exclusive. Dry-run summaries say files "would update" and never
+claim a write.
 
 ## Config
 
@@ -112,18 +113,15 @@ summaries say files "would update" and never claim a write.
     "recursive": false,
     "guardUnchanged": true,
     "skipOnCI": true,
-    "short": true,
-    "quiet": false,
-    "json": false,
+    "output": "short",
     "rootAlso": true,
     "lockPath": ".git/autover.lock",
-    "patch": null,
-    "verbose": false
+    "patch": null
 }
 ```
 
 Configuration is schema-validated and fails closed. Unknown keys, malformed JSON, incorrect value types, and invalid
-`format`, `metadata`, or `patch` values exit with code 2.
+`format`, `metadata`, `output`, or `patch` values exit with code 2.
 
 ## Migration to v4
 
@@ -134,6 +132,10 @@ metadata is stripped from those tag names and subsequent commits collide with th
 Node.js 20 support has been removed. Upgrade consumers to Node.js 22.13.0 or newer before installing v4.
 
 Git 1.x and Git 2.0 through 2.8 are no longer accepted. Upgrade to Git 2.9.0 or newer before installing v4.
+
+The `verbose`, `quiet`, `short`, and `json` configuration booleans have been replaced by one `output` enum. For example,
+replace `"short": true` with `"output": "short"`. The old configuration keys now fail schema validation; the matching
+CLI aliases remain available.
 
 ### Machine-readable output
 

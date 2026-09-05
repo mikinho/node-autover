@@ -325,25 +325,17 @@ describe("parseArgs", () => {
         assert.equal(parseArgs(["--no-skip-ci"]).skipOnCI, false);
         assert.equal(parseArgs(["--dry-run"]).dryRun, true);
         assert.equal(parseArgs(["--check"]).check, true);
-        assert.equal(parseArgs(["--verbose"]).verbose, true);
-        assert.equal(parseArgs(["-v"]).verbose, true);
-        assert.equal(parseArgs(["--quiet"]).quiet, true);
-        assert.equal(parseArgs(["-q"]).quiet, true);
-        assert.equal(parseArgs(["--short"]).short, true);
-        assert.equal(parseArgs(["--json"]).json, true);
         assert.equal(parseArgs(["--guard-unchanged"]).guardUnchanged, true);
     });
 
-    it("lets an explicit output mode replace configured output booleans", () => {
-        const parsed = parseArgs(["--verbose"]);
-        assert.deepEqual(
-            {
-                quiet: parsed.quiet,
-                short: parsed.short,
-                verbose: parsed.verbose,
-            },
-            { quiet: false, short: false, verbose: true },
-        );
+    it("parses the output enum and compatibility aliases", () => {
+        assert.equal(parseArgs(["--output", "NORMAL"]).output, "normal");
+        assert.equal(parseArgs(["--verbose"]).output, "verbose");
+        assert.equal(parseArgs(["-v"]).output, "verbose");
+        assert.equal(parseArgs(["--quiet"]).output, "quiet");
+        assert.equal(parseArgs(["-q"]).output, "quiet");
+        assert.equal(parseArgs(["--short"]).output, "short");
+        assert.equal(parseArgs(["--json"]).output, "json");
     });
 
     it("rejects conflicting output modes", () => {
@@ -354,7 +346,22 @@ describe("parseArgs", () => {
             throw new Error("exit");
         };
         try {
-            assert.throws(() => parseArgs(["--quiet", "--verbose"]), /exit/u);
+            assert.throws(() => parseArgs(["--output", "quiet", "--verbose"]), /exit/u);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
+    it("rejects an invalid output mode", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--output", "loud"]), /exit/u);
             assert.equal(exitCode, 2);
         } finally {
             process.exit = original;
@@ -379,7 +386,7 @@ describe("parseArgs", () => {
         const out = parseArgs(["--workspaces", "--dry-run", "--short", "--format", "pre"]);
         assert.equal(out.workspaces, true);
         assert.equal(out.dryRun, true);
-        assert.equal(out.short, true);
+        assert.equal(out.output, "short");
         assert.equal(out.format, "pre");
     });
 

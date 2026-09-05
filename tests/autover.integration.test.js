@@ -292,15 +292,34 @@ describe("autover Git integration", () => {
         ]);
     });
 
-    it("rejects conflicting configured output modes", (t) => {
+    it("rejects removed output booleans and invalid output modes", (t) => {
         const { repo, run } = fixture(t);
         fs.writeFileSync(
             path.join(repo, ".autoverrc.json"),
-            `${JSON.stringify({ quiet: true, verbose: true }, null, 4)}\n`,
+            `${JSON.stringify({ short: true }, null, 4)}\n`,
         );
-        const result = run("--dry-run", "--no-amend");
-        assert.equal(result.status, 2);
-        assert.match(result.stderr, /output modes verbose, quiet are mutually exclusive/u);
+        const removed = run("--dry-run", "--no-amend");
+        assert.equal(removed.status, 2);
+        assert.match(removed.stderr, /unknown configuration key "short"/u);
+
+        fs.writeFileSync(
+            path.join(repo, ".autoverrc.json"),
+            `${JSON.stringify({ output: "loud" }, null, 4)}\n`,
+        );
+        const invalid = run("--dry-run", "--no-amend");
+        assert.equal(invalid.status, 2);
+        assert.match(invalid.stderr, /configuration key "output" must be one of/u);
+    });
+
+    it("lets a CLI output alias override the configured mode", (t) => {
+        const { repo, run } = fixture(t);
+        fs.writeFileSync(
+            path.join(repo, ".autoverrc.json"),
+            `${JSON.stringify({ output: "short" }, null, 4)}\n`,
+        );
+        const result = run("--dry-run", "--no-amend", "--json");
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(JSON.parse(result.stdout).schemaVersion, 1);
     });
 
     it("rejects detached HEAD before writing", (t) => {

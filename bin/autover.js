@@ -65,6 +65,9 @@ const MINIMUM_GIT_VERSION = "2.9.0";
 /** @const {number} OUTPUT_SCHEMA_VERSION Machine-readable result schema version. */
 const OUTPUT_SCHEMA_VERSION = 1;
 
+/** @const {Set<String>} OUTPUT_MODES Supported human and machine output modes. */
+const OUTPUT_MODES = new Set(["normal", "verbose", "quiet", "short", "json"]);
+
 /** @const {number} LOCK_SCHEMA_VERSION Lock owner metadata schema version. */
 const LOCK_SCHEMA_VERSION = 1;
 
@@ -79,10 +82,7 @@ const defaultOptions = {
     noAmend: false,
     dryRun: false,
     check: false,
-    verbose: false,
-    quiet: false,
-    short: false,
-    json: false,
+    output: "normal",
     format: "build",
     metadata: "timestamp",
     separateCommit: false,
@@ -973,10 +973,7 @@ function validateConfig(config) {
         noAmend: ["boolean"],
         separateCommit: ["boolean"],
         dryRun: ["boolean"],
-        verbose: ["boolean"],
-        quiet: ["boolean"],
-        short: ["boolean"],
-        json: ["boolean"],
+        output: ["string"],
         format: ["string"],
         metadata: ["string"],
         guardUnchanged: ["boolean"],
@@ -994,10 +991,9 @@ function validateConfig(config) {
             throw new TypeError(`configuration key "${key}" must be ${types[key].join(" or ")}`);
         }
     }
-    const outputModes = ["verbose", "quiet", "short", "json"].filter((key) => config[key] === true);
-    if (outputModes.length > 1) {
+    if (config.output !== undefined && !OUTPUT_MODES.has(config.output)) {
         throw new TypeError(
-            `configuration output modes ${outputModes.join(", ")} are mutually exclusive`,
+            `configuration key "output" must be one of ${Array.from(OUTPUT_MODES).join(", ")}`,
         );
     }
 }
@@ -1024,13 +1020,10 @@ async function doInit(repoRoot) {
         recursive: false,
         guardUnchanged: true,
         skipOnCI: true,
-        short: true,
-        quiet: false,
-        json: false,
+        output: "short",
         rootAlso: true,
         lockPath: ".git/autover.lock",
         patch: null,
-        verbose: false,
     };
     await fsp.writeFile(p, JSON.stringify(body, null, 4) + "\n", "utf8");
     console.log("autover: wrote .autoverrc.json");
@@ -1613,15 +1606,12 @@ function parseArgs(argv) {
     const selectOutputMode = (mode) => {
         if (outputMode && outputMode !== mode) {
             console.error(
-                `autover: output options --${outputMode} and --${mode} are mutually exclusive`,
+                `autover: output modes "${outputMode}" and "${mode}" are mutually exclusive`,
             );
             process.exit(2);
         }
         outputMode = mode;
-        out.verbose = mode === "verbose";
-        out.quiet = mode === "quiet";
-        out.short = mode === "short";
-        out.json = mode === "json";
+        out.output = mode;
     };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
@@ -1664,6 +1654,15 @@ function parseArgs(argv) {
             out.check = true;
         } else if (a === "--no-skip-ci") {
             out.skipOnCI = false;
+        } else if (a === "--output") {
+            const output = takeValue().toLowerCase();
+            if (!OUTPUT_MODES.has(output)) {
+                console.error(
+                    `autover: --output must be one of ${Array.from(OUTPUT_MODES).join(", ")}, got "${output}"`,
+                );
+                process.exit(2);
+            }
+            selectOutputMode(output);
         } else if (a === "-v" || a === "--verbose") {
             selectOutputMode("verbose");
         } else if (a === "-q" || a === "--quiet") {
@@ -1738,7 +1737,8 @@ function printHelp() {
             "               [--format build|pre] [--patch N]",
             "               [--metadata timestamp|timestamp-sha]",
             "               [--guard-unchanged] [--no-amend | --separate-commit] [--dry-run | --check]",
-            "               [--no-skip-ci] [--verbose | --quiet | --short | --json]",
+            "               [--no-skip-ci] [--output normal|verbose|quiet|short|json]",
+            "               [--verbose | --quiet | --short | --json]",
             "               [--init | --install | --uninstall | --doctor | --unlock]",
             "",
             "Examples:",
@@ -1837,6 +1837,10 @@ async function main() {
     }
 
     const cfg = { ...defaultOptions, ...configOptions, ...args };
+    cfg.verbose = cfg.output === "verbose";
+    cfg.quiet = cfg.output === "quiet";
+    cfg.short = cfg.output === "short";
+    cfg.json = cfg.output === "json";
     if (cfg.check) {
         cfg.dryRun = true;
         cfg.noAmend = true;
