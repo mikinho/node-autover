@@ -60,7 +60,7 @@ function fixture(t, { workspaces = false } = {}) {
         spawnSync(process.execPath, [cli, ...args], {
             cwd: repo,
             encoding: "utf8",
-            env: { ...process.env, CI: "" },
+            env: { ...process.env, AUTOVER_SKIP: "", CI: "" },
         });
     const json = (name) => JSON.parse(fs.readFileSync(path.join(repo, name), "utf8"));
     return { repo, git, run, json };
@@ -382,7 +382,7 @@ describe("autover Git integration", () => {
         const result = spawnSync(process.execPath, [cli, "--short"], {
             cwd: linked,
             encoding: "utf8",
-            env: { ...process.env, CI: "" },
+            env: { ...process.env, AUTOVER_SKIP: "", CI: "" },
         });
         assert.equal(result.status, 0, result.stderr);
         assert.match(
@@ -563,6 +563,7 @@ describe("autover Git integration", () => {
             encoding: "utf8",
             env: {
                 ...process.env,
+                AUTOVER_SKIP: "",
                 CI: "",
                 GIT_AUTHOR_NAME: "",
                 GIT_AUTHOR_EMAIL: "",
