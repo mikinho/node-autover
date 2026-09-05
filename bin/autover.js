@@ -630,10 +630,11 @@ function pathIsDirty(repoRoot, target) {
     return result.status !== 0 || Boolean((result.stdout || "").trim());
 }
 
-/** Return true when HEAD carries a valid or partially trusted Git signature. */
+/** Return true when the HEAD commit object carries a Git signature header. */
 function headIsSigned(repoRoot) {
-    const status = runGit(["show", "-s", "--format=%G?", "HEAD"], { cwd: repoRoot });
-    return Boolean(status && status !== "N");
+    const commit = runGit(["cat-file", "-p", "HEAD"], { cwd: repoRoot });
+    const headers = commit?.split(/\r?\n\r?\n/u, 1)[0] || "";
+    return /^gpgsig(?:-sha256)? /mu.test(headers);
 }
 
 /**
