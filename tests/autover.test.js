@@ -15,6 +15,7 @@ import {
     parseArgs,
     parseMMP,
     shortCommitId,
+    versionAtLeast,
     versionTuple,
 } from "../bin/autover.js";
 
@@ -107,8 +108,21 @@ describe("versionTuple", () => {
         assert.deepEqual(versionTuple("2.46.0"), [2, 46, 0]);
     });
 
-    it("handles single-digit version", () => {
-        assert.deepEqual(versionTuple("1.0.0"), [1, 0, 0]);
+    it("pads omitted minor and patch components", () => {
+        assert.deepEqual(versionTuple("1"), [1, 0, 0]);
+    });
+});
+
+describe("versionAtLeast", () => {
+    it("accepts the minimum Git version and newer releases", () => {
+        assert.equal(versionAtLeast("2.9.0", "2.9.0"), true);
+        assert.equal(versionAtLeast("2.9.1", "2.9.0"), true);
+        assert.equal(versionAtLeast("3.0.0", "2.9.0"), true);
+    });
+
+    it("rejects older and malformed Git versions", () => {
+        assert.equal(versionAtLeast("2.8.99", "2.9.0"), false);
+        assert.equal(versionAtLeast("unknown", "2.9.0"), false);
     });
 });
 

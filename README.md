@@ -14,7 +14,7 @@ write access to your history, autover ships with zero runtime dependencies: one 
 ## Supported Environments
 
 - Node.js 22.13.0 or newer. The exact minimum and Node.js 24 are exercised in CI.
-- Git 1.8.2 or newer for repository operations.
+- Git 2.9.0 or newer for `core.hooksPath` and repository-relative Git path resolution.
 - Linux and Windows are exercised in CI, including installation of the packed command at the exact Node.js minimum. Maintainer validation also covers macOS.
 - npm supplies the installed `autover` launcher and is required for hook installation through `npx --no-install`.
 
@@ -132,6 +132,8 @@ metadata is stripped from those tag names and subsequent commits collide with th
 `.autoverrc.json`; create release tags through the documented signed release process instead.
 
 Node.js 20 support has been removed. Upgrade consumers to Node.js 22.13.0 or newer before installing v4.
+
+Git 1.x and Git 2.0 through 2.8 are no longer accepted. Upgrade to Git 2.9.0 or newer before installing v4.
 
 ### Machine-readable output
 

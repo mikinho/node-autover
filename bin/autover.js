@@ -59,6 +59,9 @@ const SKIP_DIRS = new Set(["node_modules", ".git"]);
 /** @const {number} GIT_PATH_BATCH_CHAR_LIMIT Conservative cross-platform argument batch size. */
 const GIT_PATH_BATCH_CHAR_LIMIT = 16_000;
 
+/** @const {string} MINIMUM_GIT_VERSION Earliest Git release with required path APIs. */
+const MINIMUM_GIT_VERSION = "2.9.0";
+
 /** @const {number} OUTPUT_SCHEMA_VERSION Machine-readable result schema version. */
 const OUTPUT_SCHEMA_VERSION = 1;
 
@@ -140,7 +143,30 @@ function gitVersion() {
  * @return {Array<Number>} Tuple of [major, minor, patch].
  */
 function versionTuple(v) {
-    return v.split(".").map((n) => parseInt(n, 10));
+    const [major = 0, minor = 0, patch = 0] = v.split(".").map((n) => parseInt(n, 10));
+    return [major, minor, patch];
+}
+
+/**
+ * Determine whether one dotted version is at least another.
+ *
+ * @method versionAtLeast
+ * @param {String} actual Detected version.
+ * @param {String} minimum Required minimum version.
+ * @return {Boolean} True when the detected version satisfies the minimum.
+ */
+function versionAtLeast(actual, minimum) {
+    const actualTuple = versionTuple(actual);
+    const minimumTuple = versionTuple(minimum);
+    if (![...actualTuple, ...minimumTuple].every(Number.isFinite)) {
+        return false;
+    }
+    for (let index = 0; index < minimumTuple.length; index += 1) {
+        if (actualTuple[index] !== minimumTuple[index]) {
+            return actualTuple[index] > minimumTuple[index];
+        }
+    }
+    return true;
 }
 
 /**
@@ -1736,6 +1762,7 @@ export {
     parseArgs,
     parseMMP,
     shortCommitId,
+    versionAtLeast,
     versionTuple,
 };
 
@@ -1771,10 +1798,8 @@ async function main() {
     }
 
     const gv = gitVersion();
-    const [g1, g2, g3] = versionTuple(gv);
-    const ok = g1 > 1 || (g1 === 1 && (g2 > 8 || (g2 === 8 && g3 >= 2))); // >= 1.8.2
-    if (!ok) {
-        console.error("autover: git 1.8.2 or newer is required");
+    if (!versionAtLeast(gv, MINIMUM_GIT_VERSION)) {
+        console.error(`autover: git ${MINIMUM_GIT_VERSION} or newer is required`);
         process.exit(1);
     }
     if (!isGitRepo()) {
