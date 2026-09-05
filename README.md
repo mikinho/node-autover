@@ -85,7 +85,8 @@ npx autover [--file PATH | --workspaces [--recursive]]
 `--file` and `--workspaces` are mutually exclusive, as are `--no-amend` and `--separate-commit`. `--recursive` requires
 `--workspaces`. `--patch` is not supported with `--format pre` and must be a non-negative integer. `--no-skip-ci`
 explicitly overrides `skipOnCI` for a guarded CI workflow. Commit-producing modes require an empty index and clean
-generated manifests/lockfiles.
+generated manifests/lockfiles. `--verbose`, `--quiet`, and `--short` are mutually exclusive; an explicitly supplied
+CLI output mode replaces the configured mode. Dry-run summaries say files "would update" and never claim a write.
 
 ## Config
 

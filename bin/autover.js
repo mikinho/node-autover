@@ -874,6 +874,12 @@ function validateConfig(config) {
             throw new TypeError(`configuration key "${key}" must be ${types[key].join(" or ")}`);
         }
     }
+    const outputModes = ["verbose", "quiet", "short"].filter((key) => config[key] === true);
+    if (outputModes.length > 1) {
+        throw new TypeError(
+            `configuration output modes ${outputModes.join(", ")} are mutually exclusive`,
+        );
+    }
 }
 
 /**
@@ -1162,6 +1168,19 @@ function maybeTag(tagOnChange, version, changed, verbose) {
  */
 function parseArgs(argv) {
     const out = {};
+    let outputMode = null;
+    const selectOutputMode = (mode) => {
+        if (outputMode && outputMode !== mode) {
+            console.error(
+                `autover: output options --${outputMode} and --${mode} are mutually exclusive`,
+            );
+            process.exit(2);
+        }
+        outputMode = mode;
+        out.verbose = mode === "verbose";
+        out.quiet = mode === "quiet";
+        out.short = mode === "short";
+    };
     for (let i = 0; i < argv.length; i += 1) {
         const a = argv[i];
         const takeValue = () => {
@@ -1196,11 +1215,11 @@ function parseArgs(argv) {
         } else if (a === "--no-skip-ci") {
             out.skipOnCI = false;
         } else if (a === "-v" || a === "--verbose") {
-            out.verbose = true;
+            selectOutputMode("verbose");
         } else if (a === "-q" || a === "--quiet") {
-            out.quiet = true;
+            selectOutputMode("quiet");
         } else if (a === "--short") {
-            out.short = true;
+            selectOutputMode("short");
         } else if (a === "--format") {
             const fmt = takeValue().toLowerCase();
             if (fmt !== "build" && fmt !== "pre") {
@@ -1661,7 +1680,8 @@ async function main() {
         if (!cfg.quiet && cfg.short) {
             const ts = isoZ(lastDate || new Date());
             const v = firstChangedVersion || "unchanged";
-            console.log(`autover: ${changedFiles.length} files updated | ${v} | ${ts}`);
+            const action = cfg.dryRun ? "would update" : "updated";
+            console.log(`autover: ${changedFiles.length} files ${action} | ${v} | ${ts}`);
             return;
         }
 

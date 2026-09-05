@@ -201,9 +201,22 @@ describe("autover Git integration", () => {
         const before = fs.readFileSync(path.join(repo, "package.json"), "utf8");
         const result = run("--dry-run", "--no-amend", "--short");
         assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /files would update/u);
+        assert.doesNotMatch(result.stdout, /files updated/u);
         assert.equal(fs.readFileSync(path.join(repo, "package.json"), "utf8"), before);
         assert.equal(git("tag", "--list"), "");
         assert.equal(fs.existsSync(path.join(repo, ".git", "autover.lock")), false);
+    });
+
+    it("rejects conflicting configured output modes", (t) => {
+        const { repo, run } = fixture(t);
+        fs.writeFileSync(
+            path.join(repo, ".autoverrc.json"),
+            `${JSON.stringify({ quiet: true, verbose: true }, null, 4)}\n`,
+        );
+        const result = run("--dry-run", "--no-amend");
+        assert.equal(result.status, 2);
+        assert.match(result.stderr, /output modes verbose, quiet are mutually exclusive/u);
     });
 
     it("rejects detached HEAD before writing", (t) => {

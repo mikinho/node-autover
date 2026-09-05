@@ -285,6 +285,33 @@ describe("parseArgs", () => {
         assert.equal(parseArgs(["--guard-unchanged"]).guardUnchanged, true);
     });
 
+    it("lets an explicit output mode replace configured output booleans", () => {
+        const parsed = parseArgs(["--verbose"]);
+        assert.deepEqual(
+            {
+                quiet: parsed.quiet,
+                short: parsed.short,
+                verbose: parsed.verbose,
+            },
+            { quiet: false, short: false, verbose: true },
+        );
+    });
+
+    it("rejects conflicting output modes", () => {
+        const original = process.exit;
+        let exitCode = null;
+        process.exit = (code) => {
+            exitCode = code;
+            throw new Error("exit");
+        };
+        try {
+            assert.throws(() => parseArgs(["--quiet", "--verbose"]), /exit/u);
+            assert.equal(exitCode, 2);
+        } finally {
+            process.exit = original;
+        }
+    });
+
     it("parses --format with value", () => {
         assert.equal(parseArgs(["--format", "pre"]).format, "pre");
         assert.equal(parseArgs(["--format", "BUILD"]).format, "build");
